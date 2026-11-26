@@ -1,5 +1,5 @@
 // run_tracker UI. Imports core; the build inlines both into one page.
-import { CONFIG, PREF_DEFAULTS, plan, geocodeUrl, parseGeocode, newTrack, addFix, runSegments, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
+import { CONFIG, PREF_DEFAULTS, NETWORK_ERROR, plan, geocodeUrl, parseGeocode, newTrack, addFix, runSegments, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
 
 const UI = {
   storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form' },
@@ -91,7 +91,8 @@ $('planBtn').onclick = async () => {
     if (!key) throw new Error('add your free openrouteservice key (Setup)');
     if (f.zip) {
       status('Looking up zip…');
-      const r = await fetch(geocodeUrl(f.zip, key));
+      let r;
+      try { r = await fetch(geocodeUrl(f.zip, key)); } catch { throw new Error(NETWORK_ERROR); }
       if (!r.ok) throw new Error(`zip lookup failed (${r.status})`);
       state.start = parseGeocode(await r.json());
     }
