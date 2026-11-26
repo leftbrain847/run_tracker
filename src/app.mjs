@@ -145,6 +145,10 @@ $('gpxBtn').onclick = () => { if (state.chosen) download('run_tracker_route.gpx'
 async function keepAwake() {
   try { state.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
 }
+function letSleep() {
+  state.wakeLock?.release?.().catch(() => {});
+  state.wakeLock = null;
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.watchId != null && !state.paused) keepAwake();
 });
@@ -170,14 +174,14 @@ $('startBtn').onclick = () => {
   if (!navigator.geolocation) { status('no GPS on this device', true); return; }
   state.track = newTrack();
   state.paused = false;
+  $('pauseBtn').textContent = 'Pause';
   document.body.classList.add('running');
   keepAwake();
   const planCoords = state.chosen?.route.coords ?? [];
   state.watchId = navigator.geolocation.watchPosition(
     (p) => {
       if (state.paused) return;
-      addFix(state.track, { lat: p.coords.latitude, lon: p.coords.longitude, ele: p.coords.altitude ?? 0, accuracy: p.coords.accuracy, t: p.timestamp }, planCoords);
-      if (state.track.startT == null) state.track.startT = Date.now();
+      addFix(state.track, { lat: p.coords.latitude, lon: p.coords.longitude, ele: p.coords.altitude, accuracy: p.coords.accuracy, t: p.timestamp }, planCoords);
       drawTrack();
     },
     (e) => status(`GPS: ${e.message}`, true),
@@ -190,8 +194,9 @@ $('startBtn').onclick = () => {
 
 $('pauseBtn').onclick = () => {
   if (!state.track) return;
-  if (!state.paused) { state.paused = true; state.pauseAt = Date.now(); $('pauseBtn').textContent = 'Resume'; }
+  if (!state.paused) { state.paused = true; state.pauseAt = Date.now(); $('pauseBtn').textContent = 'Resume'; letSleep(); }
   else {
+    keepAwake();
     state.track.pausedMs += Date.now() - state.pauseAt;
     // Resume starts a fresh segment so the pause isn't drawn or counted as a gap.
     state.track.last = null;
@@ -203,7 +208,9 @@ $('finishBtn').onclick = () => {
   if (state.watchId != null) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
   clearInterval(state.timer);
-  try { state.wakeLock?.release(); } catch { /* ignore */ }
+  letSleep();
+  if (state.paused) { state.track.pausedMs += Date.now() - state.pauseAt; state.paused = false; }
+  $('pauseBtn').textContent = 'Pause';
   tick();
   document.body.classList.remove('running');
   document.body.classList.add('done');
@@ -212,7 +219,12 @@ $('finishBtn').onclick = () => {
 
 $('saveRunBtn').onclick = () => {
   if (!state.track) return;
-  const segs = [...state.track.segments];
+  // Planned gap fills go in as their own segments so the file's distance matches the screen.
+  // Each gap sits between segment i and i+1, so interleave them in order.
+  const segs = state.track.segments.flatMap((seg, i) => {
+    const g = state.track.gaps[i];
+    return g?.kind === 'planned' ? [seg, g.path] : [seg];
+  });
   download(`run_${new Date().toISOString().slice(0, 10)}.gpx`, toGpx('run_tracker run', segs));
 };
 

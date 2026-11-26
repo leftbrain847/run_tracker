@@ -147,6 +147,8 @@ const CONFIG = {
     minStepM: 3,       // ignore jitter below this
     gapMs: 20000,      // no fix for this long = a gap
     snapM: 50,         // both gap ends within this of the plan = fill with the plan
+    wrapFraction: 0.25, // a gap may wrap past the loop's start only from its last 25% to its first 25%
+    maxSpeedMps: 6.5,  // a filled gap can't be longer than this speed allows (~4:08/mi)
   },
 };
 
@@ -340,17 +342,22 @@ function nearestIndex(coords, p) {
 
 // Fill a GPS gap between fixes a and b. On-plan: the planned path between them (estimated). Off-plan: a straight
 // line that does not count toward distance.
-function fillGap(planCoords, a, b, cfg = CONFIG) {
+function fillGap(planCoords, a, b, gapMs = Infinity, cfg = CONFIG) {
+  const unknown = { kind: 'unknown', path: [a, b], distance: 0 };
+  if (!planCoords.length) return unknown;
   const na = nearestIndex(planCoords, a);
   const nb = nearestIndex(planCoords, b);
-  if (planCoords.length && na.dist <= cfg.track.snapM && nb.dist <= cfg.track.snapM) {
-    let seg;
-    if (nb.index >= na.index) seg = planCoords.slice(na.index, nb.index + 1);
-    else seg = [...planCoords.slice(na.index), ...planCoords.slice(0, nb.index + 1)]; // loop wraps past the start
-    const path = [a, ...seg, b];
-    return { kind: 'planned', path, distance: pathLength(path) };
-  }
-  return { kind: 'unknown', path: [a, b], distance: 0 };
+  if (na.dist > cfg.track.snapM || nb.dist > cfg.track.snapM) return unknown;
+  const last = planCoords.length - 1;
+  const w = cfg.track.wrapFraction * last;
+  let seg;
+  if (nb.index >= na.index) seg = planCoords.slice(na.index, nb.index + 1);
+  else if (na.index >= last - w && nb.index <= w) seg = [...planCoords.slice(na.index), ...planCoords.slice(1, nb.index + 1)]; // crossed the start
+  else return unknown; // went backwards or jittered behind: don't invent a lap
+  const path = [a, ...seg, b];
+  const distance = pathLength(path);
+  if (distance > (gapMs / 1000) * cfg.track.maxSpeedMps) return unknown; // faster than a runner could go
+  return { kind: 'planned', path, distance };
 }
 
 // Tracker state machine. Feed it fixes {lat, lon, ele, accuracy, t}; it returns what to draw.
@@ -360,7 +367,7 @@ function newTrack() {
 
 function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   if (fix.accuracy != null && fix.accuracy > cfg.track.maxAccuracyM) return track;
-  const p = [fix.lat, fix.lon, fix.ele ?? 0];
+  const p = [fix.lat, fix.lon, fix.ele ?? track.last?.p[2] ?? 0]; // no altitude: carry the last one, don't drop to 0
   if (track.startT == null) track.startT = fix.t;
   if (!track.last) {
     track.segments.push([p]);
@@ -369,13 +376,13 @@ function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   }
   const step = haversine(track.last.p, p);
   if (fix.t - track.last.t >= cfg.track.gapMs) {
-    const gap = fillGap(planCoords, track.last.p, p, cfg);
+    const gap = fillGap(planCoords, track.last.p, p, fix.t - track.last.t, cfg);
     track.gaps.push(gap);
     track.distance += gap.distance;
     track.estimated += gap.distance;
     track.segments.push([p]);
   } else {
-    if (step < cfg.track.minStepM) return track;
+    if (step < cfg.track.minStepM) { track.last.t = fix.t; return track; } // standing still is not a gap
     track.segments[track.segments.length - 1].push(p);
     track.distance += step;
   }
@@ -555,6 +562,10 @@ $('gpxBtn').onclick = () => { if (state.chosen) download('run_tracker_route.gpx'
 async function keepAwake() {
   try { state.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
 }
+function letSleep() {
+  state.wakeLock?.release?.().catch(() => {});
+  state.wakeLock = null;
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.watchId != null && !state.paused) keepAwake();
 });
@@ -580,14 +591,14 @@ $('startBtn').onclick = () => {
   if (!navigator.geolocation) { status('no GPS on this device', true); return; }
   state.track = newTrack();
   state.paused = false;
+  $('pauseBtn').textContent = 'Pause';
   document.body.classList.add('running');
   keepAwake();
   const planCoords = state.chosen?.route.coords ?? [];
   state.watchId = navigator.geolocation.watchPosition(
     (p) => {
       if (state.paused) return;
-      addFix(state.track, { lat: p.coords.latitude, lon: p.coords.longitude, ele: p.coords.altitude ?? 0, accuracy: p.coords.accuracy, t: p.timestamp }, planCoords);
-      if (state.track.startT == null) state.track.startT = Date.now();
+      addFix(state.track, { lat: p.coords.latitude, lon: p.coords.longitude, ele: p.coords.altitude, accuracy: p.coords.accuracy, t: p.timestamp }, planCoords);
       drawTrack();
     },
     (e) => status(`GPS: ${e.message}`, true),
@@ -600,8 +611,9 @@ $('startBtn').onclick = () => {
 
 $('pauseBtn').onclick = () => {
   if (!state.track) return;
-  if (!state.paused) { state.paused = true; state.pauseAt = Date.now(); $('pauseBtn').textContent = 'Resume'; }
+  if (!state.paused) { state.paused = true; state.pauseAt = Date.now(); $('pauseBtn').textContent = 'Resume'; letSleep(); }
   else {
+    keepAwake();
     state.track.pausedMs += Date.now() - state.pauseAt;
     // Resume starts a fresh segment so the pause isn't drawn or counted as a gap.
     state.track.last = null;
@@ -613,7 +625,9 @@ $('finishBtn').onclick = () => {
   if (state.watchId != null) navigator.geolocation.clearWatch(state.watchId);
   state.watchId = null;
   clearInterval(state.timer);
-  try { state.wakeLock?.release(); } catch { /* ignore */ }
+  letSleep();
+  if (state.paused) { state.track.pausedMs += Date.now() - state.pauseAt; state.paused = false; }
+  $('pauseBtn').textContent = 'Pause';
   tick();
   document.body.classList.remove('running');
   document.body.classList.add('done');
@@ -622,7 +636,12 @@ $('finishBtn').onclick = () => {
 
 $('saveRunBtn').onclick = () => {
   if (!state.track) return;
-  const segs = [...state.track.segments];
+  // Planned gap fills go in as their own segments so the file's distance matches the screen.
+  // Each gap sits between segment i and i+1, so interleave them in order.
+  const segs = state.track.segments.flatMap((seg, i) => {
+    const g = state.track.gaps[i];
+    return g?.kind === 'planned' ? [seg, g.path] : [seg];
+  });
   download(`run_${new Date().toISOString().slice(0, 10)}.gpx`, toGpx('run_tracker run', segs));
 };
 

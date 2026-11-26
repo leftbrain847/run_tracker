@@ -127,3 +127,34 @@ test('geocode: zip query and parse', () => {
 test('config is the single source for tunables', () => {
   assert.ok(CONFIG.plan.seeds > 0 && CONFIG.unpavedSurfaces.includes(11));
 });
+
+test('regression: jitter behind the last fix after a stop never adds a lap', () => {
+  const plan = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  const g = fillGap(plan, plan[20], plan[19], 30000);
+  assert.equal(g.kind, 'unknown');
+  assert.equal(g.distance, 0);
+});
+
+test('regression: standing still at a light is not a gap', () => {
+  const plan = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  const t = newTrack();
+  const at = (i, ms) => ({ lat: plan[i][0], lon: plan[i][1], ele: 50, accuracy: 5, t: ms });
+  addFix(t, at(5, 0), plan);
+  for (let ms = 5000; ms <= 60000; ms += 5000) addFix(t, at(5, ms), plan); // 60 s waiting, tiny steps
+  addFix(t, at(6, 65000), plan);
+  assert.equal(t.gaps.length, 0);
+  assert.ok(t.distance < 150);
+});
+
+test('gap fill is capped at a running speed for the time missed', () => {
+  const plan = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  assert.equal(fillGap(plan, plan[2], plan[30], 20000).kind, 'unknown'); // ~2.8 km in 20 s: no
+  assert.equal(fillGap(plan, plan[2], plan[30], 900000).kind, 'planned'); // in 15 min: yes
+});
+
+test('missing altitude carries the last one instead of dropping to 0', () => {
+  const t = newTrack();
+  addFix(t, { lat: 38.9, lon: -77, ele: 80, accuracy: 5, t: 0 });
+  addFix(t, { lat: 38.9005, lon: -77, ele: null, accuracy: 5, t: 5000 });
+  assert.equal(t.last.p[2], 80);
+});

@@ -30,6 +30,8 @@ export const CONFIG = {
     minStepM: 3,       // ignore jitter below this
     gapMs: 20000,      // no fix for this long = a gap
     snapM: 50,         // both gap ends within this of the plan = fill with the plan
+    wrapFraction: 0.25, // a gap may wrap past the loop's start only from its last 25% to its first 25%
+    maxSpeedMps: 6.5,  // a filled gap can't be longer than this speed allows (~4:08/mi)
   },
 };
 
@@ -223,17 +225,22 @@ export function nearestIndex(coords, p) {
 
 // Fill a GPS gap between fixes a and b. On-plan: the planned path between them (estimated). Off-plan: a straight
 // line that does not count toward distance.
-export function fillGap(planCoords, a, b, cfg = CONFIG) {
+export function fillGap(planCoords, a, b, gapMs = Infinity, cfg = CONFIG) {
+  const unknown = { kind: 'unknown', path: [a, b], distance: 0 };
+  if (!planCoords.length) return unknown;
   const na = nearestIndex(planCoords, a);
   const nb = nearestIndex(planCoords, b);
-  if (planCoords.length && na.dist <= cfg.track.snapM && nb.dist <= cfg.track.snapM) {
-    let seg;
-    if (nb.index >= na.index) seg = planCoords.slice(na.index, nb.index + 1);
-    else seg = [...planCoords.slice(na.index), ...planCoords.slice(0, nb.index + 1)]; // loop wraps past the start
-    const path = [a, ...seg, b];
-    return { kind: 'planned', path, distance: pathLength(path) };
-  }
-  return { kind: 'unknown', path: [a, b], distance: 0 };
+  if (na.dist > cfg.track.snapM || nb.dist > cfg.track.snapM) return unknown;
+  const last = planCoords.length - 1;
+  const w = cfg.track.wrapFraction * last;
+  let seg;
+  if (nb.index >= na.index) seg = planCoords.slice(na.index, nb.index + 1);
+  else if (na.index >= last - w && nb.index <= w) seg = [...planCoords.slice(na.index), ...planCoords.slice(1, nb.index + 1)]; // crossed the start
+  else return unknown; // went backwards or jittered behind: don't invent a lap
+  const path = [a, ...seg, b];
+  const distance = pathLength(path);
+  if (distance > (gapMs / 1000) * cfg.track.maxSpeedMps) return unknown; // faster than a runner could go
+  return { kind: 'planned', path, distance };
 }
 
 // Tracker state machine. Feed it fixes {lat, lon, ele, accuracy, t}; it returns what to draw.
@@ -243,7 +250,7 @@ export function newTrack() {
 
 export function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   if (fix.accuracy != null && fix.accuracy > cfg.track.maxAccuracyM) return track;
-  const p = [fix.lat, fix.lon, fix.ele ?? 0];
+  const p = [fix.lat, fix.lon, fix.ele ?? track.last?.p[2] ?? 0]; // no altitude: carry the last one, don't drop to 0
   if (track.startT == null) track.startT = fix.t;
   if (!track.last) {
     track.segments.push([p]);
@@ -252,13 +259,13 @@ export function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   }
   const step = haversine(track.last.p, p);
   if (fix.t - track.last.t >= cfg.track.gapMs) {
-    const gap = fillGap(planCoords, track.last.p, p, cfg);
+    const gap = fillGap(planCoords, track.last.p, p, fix.t - track.last.t, cfg);
     track.gaps.push(gap);
     track.distance += gap.distance;
     track.estimated += gap.distance;
     track.segments.push([p]);
   } else {
-    if (step < cfg.track.minStepM) return track;
+    if (step < cfg.track.minStepM) { track.last.t = fix.t; return track; } // standing still is not a gap
     track.segments[track.segments.length - 1].push(p);
     track.distance += step;
   }
