@@ -2,7 +2,7 @@
 theme: ""             # one of the index's config.themes
 tags: [running, maps, gps]  # from the index's config.tags; new tags lowercase_with_underscores
 what: "Run planner: pick a duration and surface/hills/downhill-finish, get scored loops, run one with live GPS and GPX export"
-next: "Pages deploy workflow for the live link; try real loops with an ORS key and tune CONFIG.weights"
+next: "Run real loops with an ORS key and tune CONFIG.weights"
 active: true          # true pulls this repo's tasks into J's queue
 public: true          # informational; each sprint day's snapshot decides publishing
-settings_done: false  # J sets the repo settings listed in CLAUDE.md, then this flips to true
+settings_done: true   # J sets the repo settings listed in CLAUDE.md, then this flips to true

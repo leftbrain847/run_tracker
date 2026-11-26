@@ -20,7 +20,7 @@ npm test
 ```
 
 ## Deployed
-- Live: (GitHub Pages, coming in the deploy PR)
+- Live: https://leftbrain847.github.io/run_tracker/
 - Day snapshot: `2026-11-26 - Run Tracker` (frozen; never edited)
 
 ## Ship a sprint day
