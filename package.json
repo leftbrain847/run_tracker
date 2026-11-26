@@ -1,0 +1,9 @@
+{
+  "name": "run_tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test"
+  }
+}

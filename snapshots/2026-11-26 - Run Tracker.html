@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="sprint-public" content="yes">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Run Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<style>
+  :root { --bg:#0f172a; --panel:#111c33; --ink:#e2e8f0; --mute:#94a3b8; --accent:#2563eb; --run:#dc2626; --ok:#16a34a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #map { height: 42vh; width: 100%; }
+  main { padding: 12px 14px calc(90px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; margin: 4px 0 10px; }
+  fieldset { border: 1px solid #1e293b; border-radius: 10px; margin: 0 0 10px; padding: 8px 10px; }
+  legend { color: var(--mute); font-size: 13px; padding: 0 4px; }
+  label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; }
+  input[type=text], input[type=number], input[type=password] { background: #0b1222; color: var(--ink); border: 1px solid #334155; border-radius: 8px; padding: 8px; font-size: 16px; }
+  input[type=range] { width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; background: #1e293b; color: var(--ink); }
+  button.primary { background: var(--accent); width: 100%; font-weight: 600; padding: 14px; }
+  .card { display: block; width: 100%; text-align: left; margin: 6px 0; border: 2px solid transparent; }
+  .card.on { border-color: var(--accent); }
+  .card small { color: var(--mute); }
+  #status { min-height: 1.4em; color: var(--mute); margin: 8px 0; }
+  #status.err { color: #fca5a5; }
+  details { margin-bottom: 10px; color: var(--mute); }
+  details a { color: #93c5fd; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); display: flex; gap: 8px; z-index: 1000; }
+  .bar button { flex: 1; }
+  #runBar .go { background: var(--ok); font-weight: 600; }
+  #live { display: none; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; margin: 8px 0; }
+  .stats b { display: block; font-size: 28px; font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--mute); font-size: 13px; }
+  #tEst { text-align: center; color: var(--mute); font-size: 13px; min-height: 1.2em; }
+  body.running #planner, body.done #planner { display: none; }
+  body.running #live, body.done #live { display: block; }
+  body.running #runBar, body.done #runBar { display: none !important; }
+  #liveBar, #doneBar { display: none; }
+  body.running #liveBar { display: flex; }
+  body.done #doneBar { display: flex; }
+  #finishBtn { background: var(--run); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<main>
+  <section id="planner">
+    <h1>Run planner</h1>
+    <details>
+      <summary>Setup: routing key</summary>
+      <p>Routes come from openrouteservice. Get a free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank" rel="noopener">openrouteservice.org</a> and paste it here. It's kept only in this browser.</p>
+      <input id="orsKey" type="password" autocomplete="off" placeholder="openrouteservice key" style="width:100%">
+    </details>
+    <fieldset>
+      <legend>Start</legend>
+      <div class="row">
+        <button id="useLocation" type="button">Use my location</button>
+        <span>or</span>
+        <input id="zip" type="text" inputmode="numeric" maxlength="10" placeholder="zip" style="width:7em">
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Duration · pace</legend>
+      <input id="duration" type="range" min="10" max="180" step="5" value="40">
+      <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
+        <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+    </fieldset>
+    <fieldset>
+      <legend>Surface</legend>
+      <label><input type="radio" name="surface" value="either" checked> either</label>
+      <label><input type="radio" name="surface" value="trail"> trail</label>
+      <label><input type="radio" name="surface" value="road"> road</label>
+    </fieldset>
+    <fieldset>
+      <legend>Terrain</legend>
+      <label><input type="radio" name="terrain" value="any" checked> any</label>
+      <label><input type="radio" name="terrain" value="hilly"> hills</label>
+      <label><input type="radio" name="terrain" value="flat"> flat</label>
+      <label><input type="checkbox" id="endDownhill"> end downhill</label>
+    </fieldset>
+    <button id="planBtn" class="primary" type="button">Plan my run</button>
+    <div id="status"></div>
+    <div id="results"></div>
+  </section>
+
+  <section id="live">
+    <div class="stats">
+      <div><b id="tTime">0:00</b><span>time</span></div>
+      <div><b id="tDist">0.00</b><span>miles</span></div>
+      <div><b id="tPace">--:--</b><span>min/mi</span></div>
+    </div>
+    <div id="tEst"></div>
+    <p style="color:var(--mute);font-size:13px">Keep the screen on for a full track. If the phone locks, the gap is filled from your planned route (dashed) when you unlock.</p>
+  </section>
+</main>
+
+<div id="runBar" class="bar" hidden>
+  <button id="gpxBtn" type="button">GPX for watch</button>
+  <button id="startBtn" class="go" type="button">Run it</button>
+</div>
+<div id="liveBar" class="bar">
+  <button id="pauseBtn" type="button">Pause</button>
+  <button id="finishBtn" type="button">Finish</button>
+</div>
+<div id="doneBar" class="bar">
+  <button id="saveRunBtn" type="button">Export run GPX</button>
+  <button id="newBtn" type="button">Plan another</button>
+</div>
+
+<script type="module">
+// run_tracker core: pure functions (no DOM). The page and the tests both import this file.
+// Every tunable lives in CONFIG so it can be changed at any granularity.
+
+const CONFIG = {
+  ors: {
+    base: 'https://api.openrouteservice.org',
+    profiles: { road: 'foot-walking', trail: 'foot-hiking', either: 'foot-walking' },
+    extraInfo: ['surface', 'waytype'],
+    country: 'US',
+  },
+  plan: {
+    seeds: 6,              // round trips requested per plan (each costs one ORS call)
+    loopPoints: 4,         // ORS round_trip.points: higher = rounder loop
+    distanceTolerance: 0.15, // drop candidates more than 15% off target length
+    results: 3,            // candidates shown
+    finishFraction: 0.2,   // "end downhill" looks at the last 20% of the route
+  },
+  pace: { defaultMinPerMile: 10, metersPerMile: 1609.344, feetPerMeter: 3.28084 },
+  // Surface IDs from the ORS docs; 9 and 16 are retired there but kept so old data still scores.
+  unpavedSurfaces: [2, 8, 9, 10, 11, 12, 15, 16, 17],
+  pavedSurfaces: [1, 3, 4, 5, 6, 7, 14, 18],
+  weights: {
+    distanceError: 40, // per 100% off target
+    surface: 30,       // per 100% matching surface share
+    hills: 2,          // per m of climb per km
+    finishDrop: 1.5,   // per m of drop over the finish section
+  },
+  track: {
+    maxAccuracyM: 35,  // ignore GPS fixes worse than this
+    minStepM: 3,       // ignore jitter below this
+    gapMs: 20000,      // no fix for this long = a gap
+    snapM: 50,         // both gap ends within this of the plan = fill with the plan
+  },
+};
+
+const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
+
+// ---------- geometry ----------
+const R = 6371008.8;
+const rad = (d) => (d * Math.PI) / 180;
+function haversine(a, b) {
+  // points are [lat, lon, ele?]
+  const dLat = rad(b[0] - a[0]);
+  const dLon = rad(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function cumulative(coords) {
+  const out = [0];
+  for (let i = 1; i < coords.length; i++) out.push(out[i - 1] + haversine(coords[i - 1], coords[i]));
+  return out;
+}
+
+function pathLength(coords) {
+  const c = cumulative(coords);
+  return c[c.length - 1] ?? 0;
+}
+
+function climb(coords) {
+  let ascent = 0, descent = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const d = (coords[i][2] ?? 0) - (coords[i - 1][2] ?? 0);
+    if (d > 0) ascent += d; else descent -= d;
+  }
+  return { ascent, descent };
+}
+
+// ---------- duration -> distance ----------
+function targetMeters(durationMin, paceMinPerMile = CONFIG.pace.defaultMinPerMile) {
+  if (!(durationMin > 0) || !(paceMinPerMile > 0)) throw new Error('duration and pace must be positive');
+  return (durationMin / paceMinPerMile) * CONFIG.pace.metersPerMile;
+}
+
+// ---------- ORS requests ----------
+function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
+  const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
+  return {
+    url: `${cfg.ors.base}/v2/directions/${profile}/geojson`,
+    body: {
+      coordinates: [[start.lon, start.lat]],
+      elevation: true,
+      instructions: false,
+      extra_info: cfg.ors.extraInfo,
+      options: { round_trip: { length: Math.round(meters), points: cfg.plan.loopPoints, seed } },
+    },
+  };
+}
+
+function geocodeUrl(text, key, cfg = CONFIG) {
+  const q = new URLSearchParams({ api_key: key, text, size: '1', 'boundary.country': cfg.ors.country });
+  return `${cfg.ors.base}/geocode/search?${q}`;
+}
+
+function parseGeocode(json) {
+  const f = json?.features?.[0];
+  if (!f) throw new Error('location not found');
+  const [lon, lat] = f.geometry.coordinates;
+  return { lat, lon, label: f.properties?.label ?? '' };
+}
+
+// ORS geojson -> route object. Coordinates come back [lon, lat, ele]; we store [lat, lon, ele].
+function parseRoute(json, seed = 0) {
+  const f = json?.features?.[0];
+  if (!f?.geometry?.coordinates?.length) throw new Error('no route in response');
+  const coords = f.geometry.coordinates.map(([lon, lat, ele]) => [lat, lon, ele ?? 0]);
+  const surfaces = f.properties?.extras?.surface?.values ?? [];
+  return { seed, coords, surfaces, reversed: false };
+}
+
+function reverseRoute(route) {
+  const n = route.coords.length - 1;
+  return {
+    ...route,
+    coords: [...route.coords].reverse(),
+    surfaces: route.surfaces.map(([a, b, v]) => [n - b, n - a, v]).reverse(),
+    reversed: !route.reversed,
+  };
+}
+
+// ---------- metrics ----------
+function surfaceShares(route, cfg = CONFIG) {
+  const cum = cumulative(route.coords);
+  const total = cum[cum.length - 1] || 1;
+  let unpaved = 0, paved = 0;
+  for (const [a, b, v] of route.surfaces) {
+    const len = (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
+    if (cfg.unpavedSurfaces.includes(v)) unpaved += len;
+    else if (cfg.pavedSurfaces.includes(v)) paved += len;
+  }
+  return { unpaved: unpaved / total, paved: paved / total };
+}
+
+// Elevation lost over the last `fraction` of the route (positive = finishes downhill).
+function finishDrop(coords, fraction = CONFIG.plan.finishFraction) {
+  const cum = cumulative(coords);
+  const total = cum[cum.length - 1];
+  if (!total) return 0;
+  const from = total * (1 - fraction);
+  let i = cum.findIndex((d) => d >= from);
+  if (i < 0) i = coords.length - 1;
+  return (coords[i][2] ?? 0) - (coords[coords.length - 1][2] ?? 0);
+}
+
+function metrics(route, cfg = CONFIG) {
+  const distance = pathLength(route.coords);
+  const { ascent, descent } = climb(route.coords);
+  const { unpaved, paved } = surfaceShares(route, cfg);
+  return { distance, ascent, descent, unpaved, paved, finishDrop: finishDrop(route.coords, cfg.plan.finishFraction) };
+}
+
+// ---------- scoring ----------
+function score(m, prefs, target, cfg = CONFIG) {
+  const w = cfg.weights;
+  const reasons = [];
+  let s = 100;
+  const err = Math.abs(m.distance - target) / target;
+  s -= err * 100 * (w.distanceError / 100);
+  if (prefs.surface === 'trail') { s += m.unpaved * w.surface; reasons.push(`${Math.round(m.unpaved * 100)}% unpaved`); }
+  if (prefs.surface === 'road') { s += (1 - m.unpaved) * w.surface; reasons.push(`${Math.round((1 - m.unpaved) * 100)}% paved/road`); }
+  const perKm = m.ascent / Math.max(m.distance / 1000, 0.1);
+  const ft = cfg.pace.feetPerMeter;
+  const ftPerMi = perKm * ft * (cfg.pace.metersPerMile / 1000);
+  if (prefs.terrain === 'hilly') { s += perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
+  if (prefs.terrain === 'flat') { s -= perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
+  if (prefs.endDownhill) { s += m.finishDrop * w.finishDrop; reasons.push(`finish ${m.finishDrop >= 0 ? 'drops' : 'climbs'} ${Math.abs(Math.round(m.finishDrop * ft))} ft`); }
+  return { score: s, reasons };
+}
+
+// Each loop is tried both ways round; keep the better direction, drop off-length loops, rank.
+function rankCandidates(routes, prefs, target, cfg = CONFIG) {
+  const best = routes.map((r) => {
+    const opts = [r, reverseRoute(r)].map((x) => {
+      const m = metrics(x, cfg);
+      return { route: x, metrics: m, ...score(m, prefs, target, cfg) };
+    });
+    return opts[0].score >= opts[1].score ? opts[0] : opts[1];
+  });
+  // Different seeds can return the same loop: dedupe on length + climb + midpoint, keeping the best-scoring copy.
+  const seen = new Set();
+  return best
+    .filter((c) => Math.abs(c.metrics.distance - target) / target <= cfg.plan.distanceTolerance)
+    .sort((a, b) => b.score - a.score)
+    .filter((c) => {
+      const mid = c.route.coords[Math.floor(c.route.coords.length / 2)];
+      const k = `${Math.round(c.metrics.distance / 50)}:${Math.round(c.metrics.ascent / 5)}:${mid[0].toFixed(4)},${mid[1].toFixed(4)}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, cfg.plan.results);
+}
+
+// End to end: start + duration + prefs -> ranked loops. fetchFn is injected so tests can run offline.
+async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
+  if (!key) throw new Error('add your free openrouteservice key first');
+  const target = targetMeters(durationMin, paceMinPerMile);
+  const seeds = Array.from({ length: cfg.plan.seeds }, (_, i) => i + 1);
+  const results = await Promise.allSettled(seeds.map(async (seed) => {
+    const req = directionsRequest(start, target, prefs, seed, cfg);
+    const res = await fetchFn(req.url, {
+      method: 'POST',
+      headers: { Authorization: key, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
+      body: JSON.stringify(req.body),
+    });
+    if (!res.ok) throw new Error(`routing failed (${res.status})`);
+    return parseRoute(await res.json(), seed);
+  }));
+  const routes = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  if (!routes.length) {
+    const why = results.find((r) => r.status === 'rejected')?.reason?.message ?? 'no routes';
+    throw new Error(why);
+  }
+  return { target, candidates: rankCandidates(routes, prefs, target, cfg) };
+}
+
+// ---------- tracking ----------
+function nearestIndex(coords, p) {
+  let best = 0, bestD = Infinity;
+  coords.forEach((c, i) => { const d = haversine(c, p); if (d < bestD) { bestD = d; best = i; } });
+  return { index: best, dist: bestD };
+}
+
+// Fill a GPS gap between fixes a and b. On-plan: the planned path between them (estimated). Off-plan: a straight
+// line that does not count toward distance.
+function fillGap(planCoords, a, b, cfg = CONFIG) {
+  const na = nearestIndex(planCoords, a);
+  const nb = nearestIndex(planCoords, b);
+  if (planCoords.length && na.dist <= cfg.track.snapM && nb.dist <= cfg.track.snapM) {
+    let seg;
+    if (nb.index >= na.index) seg = planCoords.slice(na.index, nb.index + 1);
+    else seg = [...planCoords.slice(na.index), ...planCoords.slice(0, nb.index + 1)]; // loop wraps past the start
+    const path = [a, ...seg, b];
+    return { kind: 'planned', path, distance: pathLength(path) };
+  }
+  return { kind: 'unknown', path: [a, b], distance: 0 };
+}
+
+// Tracker state machine. Feed it fixes {lat, lon, ele, accuracy, t}; it returns what to draw.
+function newTrack() {
+  return { segments: [], gaps: [], distance: 0, estimated: 0, last: null, startT: null, pausedMs: 0 };
+}
+
+function addFix(track, fix, planCoords = [], cfg = CONFIG) {
+  if (fix.accuracy != null && fix.accuracy > cfg.track.maxAccuracyM) return track;
+  const p = [fix.lat, fix.lon, fix.ele ?? 0];
+  if (track.startT == null) track.startT = fix.t;
+  if (!track.last) {
+    track.segments.push([p]);
+    track.last = { p, t: fix.t };
+    return track;
+  }
+  const step = haversine(track.last.p, p);
+  if (fix.t - track.last.t >= cfg.track.gapMs) {
+    const gap = fillGap(planCoords, track.last.p, p, cfg);
+    track.gaps.push(gap);
+    track.distance += gap.distance;
+    track.estimated += gap.distance;
+    track.segments.push([p]);
+  } else {
+    if (step < cfg.track.minStepM) return track;
+    track.segments[track.segments.length - 1].push(p);
+    track.distance += step;
+  }
+  track.last = { p, t: fix.t };
+  return track;
+}
+
+function trackStats(track, now) {
+  const elapsedMs = track.startT == null ? 0 : now - track.startT - track.pausedMs;
+  const miles = track.distance / CONFIG.pace.metersPerMile;
+  return { elapsedMs, miles, paceMinPerMile: miles > 0.01 ? elapsedMs / 60000 / miles : null, estimatedMiles: track.estimated / CONFIG.pace.metersPerMile };
+}
+
+// ---------- GPX ----------
+const esc = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+function toGpx(name, segments) {
+  const segs = segments.filter((s) => s.length).map((s) =>
+    `<trkseg>${s.map(([lat, lon, ele]) => `<trkpt lat="${lat.toFixed(6)}" lon="${lon.toFixed(6)}"><ele>${(ele ?? 0).toFixed(1)}</ele></trkpt>`).join('')}</trkseg>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="run_tracker" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>${esc(name)}</name>${segs}</trk></gpx>\n`;
+}
+
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(sec).padStart(2, '0')}`;
+}
+
+function fmtPace(minPerMile) {
+  if (minPerMile == null || !isFinite(minPerMile)) return '--:--';
+  const total = Math.round(minPerMile * 60);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// run_tracker UI. Imports core; the build inlines both into one page.
+
+const UI = {
+  storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form' },
+  colors: { planned: '#2563eb', alt: '#94a3b8', track: '#dc2626', gap: '#dc2626' },
+  tiles: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 },
+  tickMs: 1000,
+};
+
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage off: fine */ } },
+};
+
+const state = { start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
+
+// ---------- map ----------
+const map = L.map('map', { zoomControl: false }).setView([38.9, -77.04], 12);
+L.tileLayer(UI.tiles.url, { attribution: UI.tiles.attribution, maxZoom: UI.tiles.maxZoom }).addTo(map);
+const clearLayers = () => { state.layers.forEach((l) => l.remove()); state.layers = []; };
+const add = (l) => { l.addTo(map); state.layers.push(l); return l; };
+const latlngs = (coords) => coords.map(([a, b]) => [a, b]);
+
+function drawCandidates(selected) {
+  clearLayers();
+  state.candidates.forEach((c, i) => {
+    if (i !== selected) add(L.polyline(latlngs(c.route.coords), { color: UI.colors.alt, weight: 3, opacity: 0.6 }));
+  });
+  const c = state.candidates[selected];
+  if (!c) return;
+  const line = add(L.polyline(latlngs(c.route.coords), { color: UI.colors.planned, weight: 5 }));
+  add(L.circleMarker(c.route.coords[0], { radius: 7, color: '#16a34a', fillOpacity: 1 }));
+  map.fitBounds(line.getBounds(), { padding: [20, 20] });
+}
+
+// ---------- form ----------
+function readForm() {
+  return {
+    durationMin: Number($('duration').value),
+    paceMinPerMile: Number($('pace').value),
+    zip: $('zip').value.trim(),
+    prefs: {
+      surface: document.querySelector('input[name=surface]:checked')?.value ?? PREF_DEFAULTS.surface,
+      terrain: document.querySelector('input[name=terrain]:checked')?.value ?? PREF_DEFAULTS.terrain,
+      endDownhill: $('endDownhill').checked,
+    },
+  };
+}
+
+function restoreForm() {
+  $('orsKey').value = store.get(UI.storageKeys.orsKey) ?? '';
+  try {
+    const f = JSON.parse(store.get(UI.storageKeys.form) ?? 'null');
+    if (!f) return;
+    $('duration').value = f.durationMin; $('pace').value = f.paceMinPerMile; $('zip').value = f.zip ?? '';
+    for (const n of ['surface', 'terrain']) { const el = document.querySelector(`input[name=${n}][value=${f.prefs?.[n]}]`); if (el) el.checked = true; }
+    $('endDownhill').checked = !!f.prefs?.endDownhill;
+  } catch { /* ignore */ }
+  $('durationOut').textContent = `${$('duration').value} min`;
+}
+
+const status = (msg, isErr = false) => { $('status').textContent = msg; $('status').className = isErr ? 'err' : ''; };
+
+function locate() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('no location on this device; use a zip'));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, label: 'your location' }),
+      () => reject(new Error('location blocked; type a zip instead')),
+      { enableHighAccuracy: true, timeout: 15000 },
+    );
+  });
+}
+
+$('useLocation').onclick = async () => {
+  status('Finding you…');
+  try { state.start = await locate(); $('zip').value = ''; status('Using your location.'); map.setView([state.start.lat, state.start.lon], 14); }
+  catch (e) { status(e.message, true); }
+};
+
+$('duration').oninput = () => { $('durationOut').textContent = `${$('duration').value} min`; };
+
+$('planBtn').onclick = async () => {
+  const key = $('orsKey').value.trim();
+  store.set(UI.storageKeys.orsKey, key);
+  const f = readForm();
+  store.set(UI.storageKeys.form, JSON.stringify(f));
+  try {
+    if (!key) throw new Error('add your free openrouteservice key (Setup)');
+    if (f.zip) {
+      status('Looking up zip…');
+      const r = await fetch(geocodeUrl(f.zip, key));
+      if (!r.ok) throw new Error(`zip lookup failed (${r.status})`);
+      state.start = parseGeocode(await r.json());
+    }
+    if (!state.start) throw new Error('tap "Use my location" or type a zip');
+    status(`Building ${CONFIG.plan.seeds} loops and scoring them…`);
+    $('planBtn').disabled = true;
+    const res = await plan({ start: state.start, durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile, prefs: f.prefs, key });
+    state.candidates = res.candidates;
+    renderCandidates(res.target);
+    $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { status(e.message, true); }
+  finally { $('planBtn').disabled = false; }
+};
+
+function renderCandidates(target) {
+  const list = $('results');
+  list.innerHTML = '';
+  if (!state.candidates.length) { status(`No loops came close to ${(target / 1609.344).toFixed(1)} mi. Try again or change the duration.`, true); return; }
+  status(`Target ${(target / 1609.344).toFixed(2)} mi. Tap a loop, then Run it.`);
+  state.candidates.forEach((c, i) => {
+    const m = c.metrics;
+    const card = document.createElement('button');
+    card.className = 'card';
+    card.innerHTML = `<b>Loop ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
+    card.onclick = () => select(i);
+    list.appendChild(card);
+  });
+  select(0);
+}
+
+const escapeHtml = (s) => String(s).replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function select(i) {
+  state.chosen = state.candidates[i];
+  document.querySelectorAll('.card').forEach((c, j) => c.classList.toggle('on', i === j));
+  drawCandidates(i);
+  $('runBar').hidden = false;
+}
+
+function download(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/gpx+xml' }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+$('gpxBtn').onclick = () => { if (state.chosen) download('run_tracker_route.gpx', toGpx('run_tracker route', [state.chosen.route.coords])); };
+
+// ---------- run ----------
+async function keepAwake() {
+  try { state.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* not supported */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.watchId != null && !state.paused) keepAwake();
+});
+
+function drawTrack() {
+  clearLayers();
+  if (state.chosen) add(L.polyline(latlngs(state.chosen.route.coords), { color: UI.colors.planned, weight: 4, opacity: 0.5 }));
+  for (const s of state.track.segments) if (s.length > 1) add(L.polyline(latlngs(s), { color: UI.colors.track, weight: 5 }));
+  for (const g of state.track.gaps) add(L.polyline(latlngs(g.path), { color: UI.colors.gap, weight: 4, dashArray: '6 8', opacity: g.kind === 'planned' ? 0.9 : 0.5 }));
+  const last = state.track.last?.p;
+  if (last) add(L.circleMarker(last, { radius: 7, color: UI.colors.track, fillOpacity: 1 }));
+}
+
+function tick() {
+  const s = trackStats(state.track, state.paused ? state.pauseAt : Date.now());
+  $('tTime').textContent = fmtDuration(s.elapsedMs);
+  $('tDist').textContent = s.miles.toFixed(2);
+  $('tPace').textContent = fmtPace(s.paceMinPerMile);
+  $('tEst').textContent = s.estimatedMiles > 0.005 ? `${s.estimatedMiles.toFixed(2)} mi filled from plan` : '';
+}
+
+$('startBtn').onclick = () => {
+  if (!navigator.geolocation) { status('no GPS on this device', true); return; }
+  state.track = newTrack();
+  state.paused = false;
+  document.body.classList.add('running');
+  keepAwake();
+  const planCoords = state.chosen?.route.coords ?? [];
+  state.watchId = navigator.geolocation.watchPosition(
+    (p) => {
+      if (state.paused) return;
+      addFix(state.track, { lat: p.coords.latitude, lon: p.coords.longitude, ele: p.coords.altitude ?? 0, accuracy: p.coords.accuracy, t: p.timestamp }, planCoords);
+      if (state.track.startT == null) state.track.startT = Date.now();
+      drawTrack();
+    },
+    (e) => status(`GPS: ${e.message}`, true),
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 },
+  );
+  state.track.startT = Date.now();
+  state.timer = setInterval(tick, UI.tickMs);
+  status('Running. Keep the screen on for a full track.');
+};
+
+$('pauseBtn').onclick = () => {
+  if (!state.track) return;
+  if (!state.paused) { state.paused = true; state.pauseAt = Date.now(); $('pauseBtn').textContent = 'Resume'; }
+  else {
+    state.track.pausedMs += Date.now() - state.pauseAt;
+    // Resume starts a fresh segment so the pause isn't drawn or counted as a gap.
+    state.track.last = null;
+    state.paused = false; $('pauseBtn').textContent = 'Pause';
+  }
+};
+
+$('finishBtn').onclick = () => {
+  if (state.watchId != null) navigator.geolocation.clearWatch(state.watchId);
+  state.watchId = null;
+  clearInterval(state.timer);
+  try { state.wakeLock?.release(); } catch { /* ignore */ }
+  tick();
+  document.body.classList.remove('running');
+  document.body.classList.add('done');
+  status('Run saved below. Export it as GPX if you want to keep it.');
+};
+
+$('saveRunBtn').onclick = () => {
+  if (!state.track) return;
+  const segs = [...state.track.segments];
+  download(`run_${new Date().toISOString().slice(0, 10)}.gpx`, toGpx('run_tracker run', segs));
+};
+
+$('newBtn').onclick = () => { document.body.classList.remove('done'); state.track = null; if (state.candidates.length) drawCandidates(state.candidates.indexOf(state.chosen)); };
+
+restoreForm();
+
+</script>
+</body>
+</html>

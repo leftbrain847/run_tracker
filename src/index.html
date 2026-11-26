@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Run Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<style>
+  :root { --bg:#0f172a; --panel:#111c33; --ink:#e2e8f0; --mute:#94a3b8; --accent:#2563eb; --run:#dc2626; --ok:#16a34a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  #map { height: 42vh; width: 100%; }
+  main { padding: 12px 14px calc(90px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 20px; margin: 4px 0 10px; }
+  fieldset { border: 1px solid #1e293b; border-radius: 10px; margin: 0 0 10px; padding: 8px 10px; }
+  legend { color: var(--mute); font-size: 13px; padding: 0 4px; }
+  label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 12px 4px 0; }
+  input[type=text], input[type=number], input[type=password] { background: #0b1222; color: var(--ink); border: 1px solid #334155; border-radius: 8px; padding: 8px; font-size: 16px; }
+  input[type=range] { width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; background: #1e293b; color: var(--ink); }
+  button.primary { background: var(--accent); width: 100%; font-weight: 600; padding: 14px; }
+  .card { display: block; width: 100%; text-align: left; margin: 6px 0; border: 2px solid transparent; }
+  .card.on { border-color: var(--accent); }
+  .card small { color: var(--mute); }
+  #status { min-height: 1.4em; color: var(--mute); margin: 8px 0; }
+  #status.err { color: #fca5a5; }
+  details { margin-bottom: 10px; color: var(--mute); }
+  details a { color: #93c5fd; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); display: flex; gap: 8px; z-index: 1000; }
+  .bar button { flex: 1; }
+  #runBar .go { background: var(--ok); font-weight: 600; }
+  #live { display: none; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; margin: 8px 0; }
+  .stats b { display: block; font-size: 28px; font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--mute); font-size: 13px; }
+  #tEst { text-align: center; color: var(--mute); font-size: 13px; min-height: 1.2em; }
+  body.running #planner, body.done #planner { display: none; }
+  body.running #live, body.done #live { display: block; }
+  body.running #runBar, body.done #runBar { display: none !important; }
+  #liveBar, #doneBar { display: none; }
+  body.running #liveBar { display: flex; }
+  body.done #doneBar { display: flex; }
+  #finishBtn { background: var(--run); font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<main>
+  <section id="planner">
+    <h1>Run planner</h1>
+    <details>
+      <summary>Setup: routing key</summary>
+      <p>Routes come from openrouteservice. Get a free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank" rel="noopener">openrouteservice.org</a> and paste it here. It's kept only in this browser.</p>
+      <input id="orsKey" type="password" autocomplete="off" placeholder="openrouteservice key" style="width:100%">
+    </details>
+    <fieldset>
+      <legend>Start</legend>
+      <div class="row">
+        <button id="useLocation" type="button">Use my location</button>
+        <span>or</span>
+        <input id="zip" type="text" inputmode="numeric" maxlength="10" placeholder="zip" style="width:7em">
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Duration · pace</legend>
+      <input id="duration" type="range" min="10" max="180" step="5" value="40">
+      <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
+        <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+    </fieldset>
+    <fieldset>
+      <legend>Surface</legend>
+      <label><input type="radio" name="surface" value="either" checked> either</label>
+      <label><input type="radio" name="surface" value="trail"> trail</label>
+      <label><input type="radio" name="surface" value="road"> road</label>
+    </fieldset>
+    <fieldset>
+      <legend>Terrain</legend>
+      <label><input type="radio" name="terrain" value="any" checked> any</label>
+      <label><input type="radio" name="terrain" value="hilly"> hills</label>
+      <label><input type="radio" name="terrain" value="flat"> flat</label>
+      <label><input type="checkbox" id="endDownhill"> end downhill</label>
+    </fieldset>
+    <button id="planBtn" class="primary" type="button">Plan my run</button>
+    <div id="status"></div>
+    <div id="results"></div>
+  </section>
+
+  <section id="live">
+    <div class="stats">
+      <div><b id="tTime">0:00</b><span>time</span></div>
+      <div><b id="tDist">0.00</b><span>miles</span></div>
+      <div><b id="tPace">--:--</b><span>min/mi</span></div>
+    </div>
+    <div id="tEst"></div>
+    <p style="color:var(--mute);font-size:13px">Keep the screen on for a full track. If the phone locks, the gap is filled from your planned route (dashed) when you unlock.</p>
+  </section>
+</main>
+
+<div id="runBar" class="bar" hidden>
+  <button id="gpxBtn" type="button">GPX for watch</button>
+  <button id="startBtn" class="go" type="button">Run it</button>
+</div>
+<div id="liveBar" class="bar">
+  <button id="pauseBtn" type="button">Pause</button>
+  <button id="finishBtn" type="button">Finish</button>
+</div>
+<div id="doneBar" class="bar">
+  <button id="saveRunBtn" type="button">Export run GPX</button>
+  <button id="newBtn" type="button">Plan another</button>
+</div>
+
+<script type="module">
+/*@APP@*/
+</script>
+</body>
+</html>
