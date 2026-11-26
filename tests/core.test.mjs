@@ -17,7 +17,7 @@ test('duration and pace become a target distance', () => {
 
 test('request uses the trail profile, a round trip, elevation and surface info', () => {
   const r = directionsRequest(START, 6437.4, { surface: 'trail' }, 3);
-  assert.match(r.url, /foot-hiking\/geojson$/);
+  assert.equal(r.url, 'https://api.heigit.org/openrouteservice/v2/directions/foot-hiking/geojson');
   assert.deepEqual(r.body.coordinates, [[START.lon, START.lat]]);
   assert.equal(r.body.options.round_trip.length, 6437);
   assert.equal(r.body.options.round_trip.seed, 3);
@@ -118,7 +118,7 @@ test('formatting', () => {
 });
 
 test('geocode: zip query and parse', () => {
-  assert.match(geocodeUrl('20001', 'k'), /text=20001/);
+  assert.match(geocodeUrl('20001', 'k'), /^https:\/\/api\.heigit\.org\/pelias\/v1\/search\?.*text=20001/);
   assert.match(geocodeUrl('20001', 'k'), /boundary\.country=US/);
   assert.deepEqual(parseGeocode({ features: [{ geometry: { coordinates: [-77, 38.9] }, properties: { label: 'DC' } }] }), { lat: 38.9, lon: -77, label: 'DC' });
   assert.throws(() => parseGeocode({ features: [] }), /not found/);

@@ -55,7 +55,7 @@
     <h1>Run planner</h1>
     <details>
       <summary>Setup: routing key</summary>
-      <p>Routes come from openrouteservice. Get a free key at <a href="https://openrouteservice.org/dev/#/signup" target="_blank" rel="noopener">openrouteservice.org</a> and paste it here. It's kept only in this browser.</p>
+      <p>Routes come from openrouteservice. Get a free key at <a href="https://account.heigit.org/" target="_blank" rel="noopener">account.heigit.org</a> and paste it here. It's kept only in this browser.</p>
       <input id="orsKey" type="password" autocomplete="off" placeholder="openrouteservice key" style="width:100%">
     </details>
     <fieldset>
@@ -120,7 +120,9 @@
 
 const CONFIG = {
   ors: {
-    base: 'https://api.openrouteservice.org',
+    // The old openrouteservice.org API host was retired in Nov 2026; HeiGIT serves the same APIs under api.heigit.org.
+    routingBase: 'https://api.heigit.org/openrouteservice',
+    geocodeBase: 'https://api.heigit.org/pelias/v1',
     profiles: { road: 'foot-walking', trail: 'foot-hiking', either: 'foot-walking' },
     extraInfo: ['surface', 'waytype'],
     country: 'US',
@@ -152,7 +154,21 @@ const CONFIG = {
   },
 };
 
+// Browsers report blocked or dropped requests with no status ("Load failed" on iPhone). Usually a bad key or a
+// service outage, since the gateway's error replies don't carry CORS headers.
+const NETWORK_ERROR = "Couldn't reach the routing service. Check your key in Setup (copy it again from account.heigit.org), then try again.";
+
 const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
+
+// Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
+const LOCATION_ERRORS = {
+  1: 'Location is off for this site. iPhone: Settings > Privacy & Security > Location Services > Safari Websites > While Using, then reload. Or type a zip.',
+  2: 'No GPS fix yet. Step outside or try again, or type a zip.',
+  3: 'Location timed out. Try again, or type a zip.',
+};
+function locationMessage(code) {
+  return LOCATION_ERRORS[code] ?? 'Could not get your location; type a zip instead.';
+}
 
 // ---------- geometry ----------
 const R = 6371008.8;
@@ -195,7 +211,7 @@ function targetMeters(durationMin, paceMinPerMile = CONFIG.pace.defaultMinPerMil
 function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
   return {
-    url: `${cfg.ors.base}/v2/directions/${profile}/geojson`,
+    url: `${cfg.ors.routingBase}/v2/directions/${profile}/geojson`,
     body: {
       coordinates: [[start.lon, start.lat]],
       elevation: true,
@@ -208,7 +224,7 @@ function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
 
 function geocodeUrl(text, key, cfg = CONFIG) {
   const q = new URLSearchParams({ api_key: key, text, size: '1', 'boundary.country': cfg.ors.country });
-  return `${cfg.ors.base}/geocode/search?${q}`;
+  return `${cfg.ors.geocodeBase}/search?${q}`;
 }
 
 function parseGeocode(json) {
@@ -317,11 +333,12 @@ async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS,
   const seeds = Array.from({ length: cfg.plan.seeds }, (_, i) => i + 1);
   const results = await Promise.allSettled(seeds.map(async (seed) => {
     const req = directionsRequest(start, target, prefs, seed, cfg);
-    const res = await fetchFn(req.url, {
+    let res;
+    try { res = await fetchFn(req.url, {
       method: 'POST',
       headers: { Authorization: key, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
       body: JSON.stringify(req.body),
-    });
+    }); } catch { throw new Error(NETWORK_ERROR); }
     if (!res.ok) throw new Error(`routing failed (${res.status})`);
     return parseRoute(await res.json(), seed);
   }));
@@ -494,7 +511,7 @@ function locate() {
     if (!navigator.geolocation) return reject(new Error('no location on this device; use a zip'));
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, label: 'your location' }),
-      () => reject(new Error('location blocked; type a zip instead')),
+      (err) => reject(new Error(locationMessage(err?.code))),
       { enableHighAccuracy: true, timeout: 15000 },
     );
   });
@@ -517,7 +534,8 @@ $('planBtn').onclick = async () => {
     if (!key) throw new Error('add your free openrouteservice key (Setup)');
     if (f.zip) {
       status('Looking up zip…');
-      const r = await fetch(geocodeUrl(f.zip, key));
+      let r;
+      try { r = await fetch(geocodeUrl(f.zip, key)); } catch { throw new Error(NETWORK_ERROR); }
       if (!r.ok) throw new Error(`zip lookup failed (${r.status})`);
       state.start = parseGeocode(await r.json());
     }

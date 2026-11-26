@@ -30,6 +30,16 @@ test('plan: 40 min at 10:00/mi, hills + end downhill -> top loop is hilly and fi
   assert.match(toGpx('route', [top.route.coords]), /<trkpt/);
 });
 
+test('plan: a dropped request ("Load failed") becomes a readable message', async () => {
+  const dead = async () => { throw new TypeError('Load failed'); };
+  await assert.rejects(plan({ start: START, durationMin: 30, key: 'k', fetchFn: dead }), /Couldn't reach the routing service/);
+});
+
+test('no calls to the retired api.openrouteservice.org host', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['src/core.mjs', 'src/app.mjs', 'src/index.html']) assert.ok(!readFileSync(join(ROOT, f), 'utf8').includes('api.openrouteservice.org'), f);
+});
+
 test('plan: needs a key, and reports routing errors', async () => {
   await assert.rejects(plan({ start: START, durationMin: 30, key: '' }), /key/);
   await assert.rejects(plan({ start: START, durationMin: 30, key: 'k', fetchFn: fakeFetch({}) }), /routing failed \(500\)/);
