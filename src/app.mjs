@@ -110,13 +110,16 @@ $('planBtn').onclick = async () => {
 function renderCandidates(target) {
   const list = $('results');
   list.innerHTML = '';
-  if (!state.candidates.length) { status(`No loops came close to ${(target / 1609.344).toFixed(1)} mi. Try again or change the duration.`, true); return; }
-  status(`Target ${(target / 1609.344).toFixed(2)} mi. Tap a loop, then Run it.`);
+  if (!state.candidates.length) { status('No loops came back. Try again or move the start.', true); return; }
+  const off = state.candidates[0].offTarget;
+  status(off
+    ? `Nothing within ${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${(target / 1609.344).toFixed(1)} mi here; these are the closest.`
+    : `Target ${(target / 1609.344).toFixed(2)} mi. Tap a loop, then Run it.`, off);
   state.candidates.forEach((c, i) => {
     const m = c.metrics;
     const card = document.createElement('button');
     card.className = 'card';
-    card.innerHTML = `<b>Loop ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
+    card.innerHTML = `<b>Loop ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.offTarget ? 'off target · ' : ''}${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
     card.onclick = () => select(i);
     list.appendChild(card);
   });

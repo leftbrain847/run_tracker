@@ -11,7 +11,9 @@ export const CONFIG = {
     country: 'US',
   },
   plan: {
-    seeds: 6,              // round trips requested per plan (each costs one ORS call)
+    seeds: 6,              // round trips per batch (each costs one ORS call; up to 2 batches per plan)
+    calibrate: true,       // ORS round-trip length is rough: if batch 1 misses, re-ask with a corrected length
+    maxCorrection: 3,      // never scale the requested length by more than 3x either way
     loopPoints: 4,         // ORS round_trip.points: higher = rounder loop
     distanceTolerance: 0.15, // drop candidates more than 15% off target length
     results: 3,            // candidates shown
@@ -186,7 +188,7 @@ export function score(m, prefs, target, cfg = CONFIG) {
 }
 
 // Each loop is tried both ways round; keep the better direction, drop off-length loops, rank.
-export function rankCandidates(routes, prefs, target, cfg = CONFIG) {
+export function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false } = {}) {
   const best = routes.map((r) => {
     const opts = [r, reverseRoute(r)].map((x) => {
       const m = metrics(x, cfg);
@@ -196,8 +198,11 @@ export function rankCandidates(routes, prefs, target, cfg = CONFIG) {
   });
   // Different seeds can return the same loop: dedupe on length + climb + midpoint, keeping the best-scoring copy.
   const seen = new Set();
-  return best
-    .filter((c) => Math.abs(c.metrics.distance - target) / target <= cfg.plan.distanceTolerance)
+  const off = (c) => Math.abs(c.metrics.distance - target) / target;
+  let pool = best.filter((c) => off(c) <= cfg.plan.distanceTolerance);
+  // Nothing close enough: show the closest few, flagged, rather than nothing.
+  if (!pool.length && fallback) pool = [...best].sort((a, b) => off(a) - off(b)).slice(0, cfg.plan.results).map((c) => ({ ...c, offTarget: true }));
+  return pool
     .sort((a, b) => b.score - a.score)
     .filter((c) => {
       const mid = c.route.coords[Math.floor(c.route.coords.length / 2)];
@@ -210,12 +215,17 @@ export function rankCandidates(routes, prefs, target, cfg = CONFIG) {
 }
 
 // End to end: start + duration + prefs -> ranked loops. fetchFn is injected so tests can run offline.
-export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
-  if (!key) throw new Error('add your free openrouteservice key first');
-  const target = targetMeters(durationMin, paceMinPerMile);
-  const seeds = Array.from({ length: cfg.plan.seeds }, (_, i) => i + 1);
+// Median of actual/requested length for a batch: how much ORS over- or under-shoots here.
+export function lengthRatio(routes, requested) {
+  const r = routes.map((x) => pathLength(x.coords) / requested).filter((v) => v > 0).sort((a, b) => a - b);
+  if (!r.length) return 1;
+  const m = Math.floor(r.length / 2);
+  return r.length % 2 ? r[m] : (r[m - 1] + r[m]) / 2;
+}
+
+async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds }) {
   const results = await Promise.allSettled(seeds.map(async (seed) => {
-    const req = directionsRequest(start, target, prefs, seed, cfg);
+    const req = directionsRequest(start, length, prefs, seed, cfg);
     let res;
     try { res = await fetchFn(req.url, {
       method: 'POST',
@@ -225,12 +235,29 @@ export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DE
     if (!res.ok) throw new Error(`routing failed (${res.status})`);
     return parseRoute(await res.json(), seed);
   }));
-  const routes = results.filter((r) => r.status === 'fulfilled').map((r) => r.value);
-  if (!routes.length) {
-    const why = results.find((r) => r.status === 'rejected')?.reason?.message ?? 'no routes';
-    throw new Error(why);
+  return {
+    routes: results.filter((r) => r.status === 'fulfilled').map((r) => r.value),
+    error: results.find((r) => r.status === 'rejected')?.reason?.message,
+  };
+}
+
+// End to end: start + duration + prefs -> ranked loops. fetchFn is injected so tests can run offline.
+export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
+  if (!key) throw new Error('add your free openrouteservice key first');
+  const target = targetMeters(durationMin, paceMinPerMile);
+  const n = cfg.plan.seeds;
+  const first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => i + 1) });
+  if (!first.routes.length) throw new Error(first.error ?? 'no routes');
+  let routes = first.routes;
+  let requested = target;
+  if (cfg.plan.calibrate && rankCandidates(routes, prefs, target, cfg).length < cfg.plan.results) {
+    const ratio = lengthRatio(routes, target);
+    const k = Math.min(cfg.plan.maxCorrection, Math.max(1 / cfg.plan.maxCorrection, 1 / ratio));
+    requested = target * k;
+    const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => n + i + 1) });
+    routes = routes.concat(second.routes);
   }
-  return { target, candidates: rankCandidates(routes, prefs, target, cfg) };
+  return { target, requested, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true }) };
 }
 
 // ---------- tracking ----------

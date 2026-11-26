@@ -20,7 +20,7 @@ test('plan: 40 min at 10:00/mi, hills + end downhill -> top loop is hilly and fi
     // 4-6 fail: plan still works
   });
   const res = await plan({ start: START, durationMin: 40, paceMinPerMile: 10, prefs: { surface: 'either', terrain: 'hilly', endDownhill: true }, key: 'test-key', fetchFn });
-  assert.equal(fetchFn.calls.length, CONFIG.plan.seeds);
+  assert.equal(fetchFn.calls.length, CONFIG.plan.seeds * 2); // only 2 good loops in batch 1, so it re-asks
   assert.equal(fetchFn.calls[0].headers.Authorization, 'test-key');
   assert.ok(res.candidates.length >= 1 && res.candidates.length <= CONFIG.plan.results);
   const top = res.candidates[0];
@@ -28,6 +28,27 @@ test('plan: 40 min at 10:00/mi, hills + end downhill -> top loop is hilly and fi
   assert.ok(top.metrics.finishDrop > 0);
   assert.ok(!res.candidates.some((c) => c.route.seed === 3));
   assert.match(toGpx('route', [top.route.coords]), /<trkpt/);
+});
+
+test('plan: when ORS undershoots, the second batch asks for a longer loop and lands on target', async () => {
+  const calls = [];
+  const shortBy40 = async (url, init) => { // this ORS returns loops 60% of the length asked for
+    const body = JSON.parse(init.body);
+    calls.push(body.options.round_trip.length);
+    return { ok: true, status: 200, json: async () => orsResponse({ sideM: (body.options.round_trip.length * 0.6) / 4 + (body.options.round_trip.seed % 6) * 20 }) };
+  };
+  const res = await plan({ start: START, durationMin: 40, paceMinPerMile: 10, key: 'k', fetchFn: shortBy40 });
+  assert.equal(calls.length, CONFIG.plan.seeds * 2);
+  assert.ok(calls[CONFIG.plan.seeds] > calls[0] * 1.5, 'second batch asks for more length');
+  assert.equal(res.candidates.length, CONFIG.plan.results);
+  assert.ok(res.candidates.every((c) => !c.offTarget && Math.abs(c.metrics.distance - res.target) / res.target <= CONFIG.plan.distanceTolerance));
+});
+
+test('plan: if nothing is close, show the closest loops flagged off target', async () => {
+  const wayLong = async () => ({ ok: true, status: 200, json: async () => orsResponse({ sideM: 5000 }) });
+  const res = await plan({ start: START, durationMin: 40, paceMinPerMile: 10, key: 'k', fetchFn: wayLong });
+  assert.ok(res.candidates.length >= 1);
+  assert.ok(res.candidates.every((c) => c.offTarget));
 });
 
 test('plan: a dropped request ("Load failed") becomes a readable message', async () => {
