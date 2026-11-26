@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   CONFIG, haversine, targetMeters, directionsRequest, parseRoute, reverseRoute, metrics, finishDrop, surfaceShares,
-  rankCandidates, fillGap, newTrack, addFix, runSegments, trackStats, toGpx, fmtPace, fmtDuration, parseGeocode, geocodeUrl,
+  rankCandidates, fillGap, locationMessage, newTrack, addFix, runSegments, trackStats, toGpx, fmtPace, fmtDuration, parseGeocode, geocodeUrl,
 } from '../src/core.mjs';
 import { orsResponse, START } from './fixtures.mjs';
 
@@ -174,4 +174,10 @@ test('run GPX order: a gap after a pause lands between the right segments', () =
   assert.equal(out[1], t.segments[1]);
   assert.equal(out[2], t.gaps[0].path);
   assert.equal(out[3], t.segments[2]);
+});
+
+test('location errors say what actually went wrong', () => {
+  assert.match(locationMessage(1), /Safari Websites/);
+  assert.match(locationMessage(3), /timed out/);
+  assert.match(locationMessage(99), /zip/);
 });

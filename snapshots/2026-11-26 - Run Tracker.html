@@ -160,6 +160,16 @@ const NETWORK_ERROR = "Couldn't reach the routing service. Check your key in Set
 
 const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
 
+// Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
+const LOCATION_ERRORS = {
+  1: 'Location is off for this site. iPhone: Settings > Privacy & Security > Location Services > Safari Websites > While Using, then reload. Or type a zip.',
+  2: 'No GPS fix yet. Step outside or try again, or type a zip.',
+  3: 'Location timed out. Try again, or type a zip.',
+};
+function locationMessage(code) {
+  return LOCATION_ERRORS[code] ?? 'Could not get your location; type a zip instead.';
+}
+
 // ---------- geometry ----------
 const R = 6371008.8;
 const rad = (d) => (d * Math.PI) / 180;
@@ -501,7 +511,7 @@ function locate() {
     if (!navigator.geolocation) return reject(new Error('no location on this device; use a zip'));
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, label: 'your location' }),
-      () => reject(new Error('location blocked; type a zip instead')),
+      (err) => reject(new Error(locationMessage(err?.code))),
       { enableHighAccuracy: true, timeout: 15000 },
     );
   });

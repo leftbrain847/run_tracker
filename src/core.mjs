@@ -43,6 +43,16 @@ export const NETWORK_ERROR = "Couldn't reach the routing service. Check your key
 
 export const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
 
+// Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
+export const LOCATION_ERRORS = {
+  1: 'Location is off for this site. iPhone: Settings > Privacy & Security > Location Services > Safari Websites > While Using, then reload. Or type a zip.',
+  2: 'No GPS fix yet. Step outside or try again, or type a zip.',
+  3: 'Location timed out. Try again, or type a zip.',
+};
+export function locationMessage(code) {
+  return LOCATION_ERRORS[code] ?? 'Could not get your location; type a zip instead.';
+}
+
 // ---------- geometry ----------
 const R = 6371008.8;
 const rad = (d) => (d * Math.PI) / 180;
