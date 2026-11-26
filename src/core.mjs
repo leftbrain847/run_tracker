@@ -3,7 +3,9 @@
 
 export const CONFIG = {
   ors: {
-    base: 'https://api.openrouteservice.org',
+    // The old openrouteservice.org API host was retired in Nov 2026; HeiGIT serves the same APIs under api.heigit.org.
+    routingBase: 'https://api.heigit.org/openrouteservice',
+    geocodeBase: 'https://api.heigit.org/pelias/v1',
     profiles: { road: 'foot-walking', trail: 'foot-hiking', either: 'foot-walking' },
     extraInfo: ['surface', 'waytype'],
     country: 'US',
@@ -34,6 +36,10 @@ export const CONFIG = {
     maxSpeedMps: 6.5,  // a filled gap can't be longer than this speed allows (~4:08/mi)
   },
 };
+
+// Browsers report blocked or dropped requests with no status ("Load failed" on iPhone). Usually a bad key or a
+// service outage, since the gateway's error replies don't carry CORS headers.
+export const NETWORK_ERROR = "Couldn't reach the routing service. Check your key in Setup (copy it again from account.heigit.org), then try again.";
 
 export const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
 
@@ -78,7 +84,7 @@ export function targetMeters(durationMin, paceMinPerMile = CONFIG.pace.defaultMi
 export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
   return {
-    url: `${cfg.ors.base}/v2/directions/${profile}/geojson`,
+    url: `${cfg.ors.routingBase}/v2/directions/${profile}/geojson`,
     body: {
       coordinates: [[start.lon, start.lat]],
       elevation: true,
@@ -91,7 +97,7 @@ export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
 
 export function geocodeUrl(text, key, cfg = CONFIG) {
   const q = new URLSearchParams({ api_key: key, text, size: '1', 'boundary.country': cfg.ors.country });
-  return `${cfg.ors.base}/geocode/search?${q}`;
+  return `${cfg.ors.geocodeBase}/search?${q}`;
 }
 
 export function parseGeocode(json) {
@@ -200,11 +206,12 @@ export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DE
   const seeds = Array.from({ length: cfg.plan.seeds }, (_, i) => i + 1);
   const results = await Promise.allSettled(seeds.map(async (seed) => {
     const req = directionsRequest(start, target, prefs, seed, cfg);
-    const res = await fetchFn(req.url, {
+    let res;
+    try { res = await fetchFn(req.url, {
       method: 'POST',
       headers: { Authorization: key, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
       body: JSON.stringify(req.body),
-    });
+    }); } catch { throw new Error(NETWORK_ERROR); }
     if (!res.ok) throw new Error(`routing failed (${res.status})`);
     return parseRoute(await res.json(), seed);
   }));
