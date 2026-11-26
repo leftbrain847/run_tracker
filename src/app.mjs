@@ -1,5 +1,5 @@
 // run_tracker UI. Imports core; the build inlines both into one page.
-import { CONFIG, PREF_DEFAULTS, plan, geocodeUrl, parseGeocode, newTrack, addFix, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
+import { CONFIG, PREF_DEFAULTS, plan, geocodeUrl, parseGeocode, newTrack, addFix, runSegments, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
 
 const UI = {
   storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form' },
@@ -220,11 +220,7 @@ $('finishBtn').onclick = () => {
 $('saveRunBtn').onclick = () => {
   if (!state.track) return;
   // Planned gap fills go in as their own segments so the file's distance matches the screen.
-  // Each gap sits between segment i and i+1, so interleave them in order.
-  const segs = state.track.segments.flatMap((seg, i) => {
-    const g = state.track.gaps[i];
-    return g?.kind === 'planned' ? [seg, g.path] : [seg];
-  });
+  const segs = runSegments(state.track);
   download(`run_${new Date().toISOString().slice(0, 10)}.gpx`, toGpx('run_tracker run', segs));
 };
 

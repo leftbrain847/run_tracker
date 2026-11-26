@@ -260,6 +260,7 @@ export function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   const step = haversine(track.last.p, p);
   if (fix.t - track.last.t >= cfg.track.gapMs) {
     const gap = fillGap(planCoords, track.last.p, p, fix.t - track.last.t, cfg);
+    gap.afterSegment = track.segments.length - 1; // pauses also start segments, so record where the gap sits
     track.gaps.push(gap);
     track.distance += gap.distance;
     track.estimated += gap.distance;
@@ -271,6 +272,14 @@ export function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   }
   track.last = { p, t: fix.t };
   return track;
+}
+
+// Segments in the order run, with planned gap fills placed after the segment they follow (for GPX export).
+export function runSegments(track) {
+  return track.segments.flatMap((seg, i) => [
+    seg,
+    ...track.gaps.filter((g) => g.kind === 'planned' && g.afterSegment === i).map((g) => g.path),
+  ]);
 }
 
 export function trackStats(track, now) {

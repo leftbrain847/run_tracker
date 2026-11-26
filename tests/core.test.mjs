@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import {
   CONFIG, haversine, targetMeters, directionsRequest, parseRoute, reverseRoute, metrics, finishDrop, surfaceShares,
-  rankCandidates, fillGap, newTrack, addFix, trackStats, toGpx, fmtPace, fmtDuration, parseGeocode, geocodeUrl,
+  rankCandidates, fillGap, newTrack, addFix, runSegments, trackStats, toGpx, fmtPace, fmtDuration, parseGeocode, geocodeUrl,
 } from '../src/core.mjs';
 import { orsResponse, START } from './fixtures.mjs';
 
@@ -157,4 +157,21 @@ test('missing altitude carries the last one instead of dropping to 0', () => {
   addFix(t, { lat: 38.9, lon: -77, ele: 80, accuracy: 5, t: 0 });
   addFix(t, { lat: 38.9005, lon: -77, ele: null, accuracy: 5, t: 5000 });
   assert.equal(t.last.p[2], 80);
+});
+
+test('run GPX order: a gap after a pause lands between the right segments', () => {
+  const plan = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  const t = newTrack();
+  const at = (i, ms) => ({ lat: plan[i][0], lon: plan[i][1], ele: 50, accuracy: 5, t: ms });
+  addFix(t, at(0, 0), plan); addFix(t, at(1, 5000), plan);        // s0
+  t.last = null;                                                   // pause/resume, as the app does
+  addFix(t, at(3, 100000), plan); addFix(t, at(4, 105000), plan);  // s1
+  addFix(t, at(12, 400000), plan);                                 // locked phone -> gap, then s2
+  assert.equal(t.segments.length, 3);
+  assert.equal(t.gaps[0].afterSegment, 1);
+  const out = runSegments(t);
+  assert.equal(out.length, 4);
+  assert.equal(out[1], t.segments[1]);
+  assert.equal(out[2], t.gaps[0].path);
+  assert.equal(out[3], t.segments[2]);
 });

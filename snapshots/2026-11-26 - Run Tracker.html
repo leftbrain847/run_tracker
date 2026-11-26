@@ -377,6 +377,7 @@ function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   const step = haversine(track.last.p, p);
   if (fix.t - track.last.t >= cfg.track.gapMs) {
     const gap = fillGap(planCoords, track.last.p, p, fix.t - track.last.t, cfg);
+    gap.afterSegment = track.segments.length - 1; // pauses also start segments, so record where the gap sits
     track.gaps.push(gap);
     track.distance += gap.distance;
     track.estimated += gap.distance;
@@ -388,6 +389,14 @@ function addFix(track, fix, planCoords = [], cfg = CONFIG) {
   }
   track.last = { p, t: fix.t };
   return track;
+}
+
+// Segments in the order run, with planned gap fills placed after the segment they follow (for GPX export).
+function runSegments(track) {
+  return track.segments.flatMap((seg, i) => [
+    seg,
+    ...track.gaps.filter((g) => g.kind === 'planned' && g.afterSegment === i).map((g) => g.path),
+  ]);
 }
 
 function trackStats(track, now) {
@@ -637,11 +646,7 @@ $('finishBtn').onclick = () => {
 $('saveRunBtn').onclick = () => {
   if (!state.track) return;
   // Planned gap fills go in as their own segments so the file's distance matches the screen.
-  // Each gap sits between segment i and i+1, so interleave them in order.
-  const segs = state.track.segments.flatMap((seg, i) => {
-    const g = state.track.gaps[i];
-    return g?.kind === 'planned' ? [seg, g.path] : [seg];
-  });
+  const segs = runSegments(state.track);
   download(`run_${new Date().toISOString().slice(0, 10)}.gpx`, toGpx('run_tracker run', segs));
 };
 
