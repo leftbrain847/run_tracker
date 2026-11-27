@@ -38,22 +38,42 @@ function drawCandidates(selected) {
   if (!c) return;
   const line = add(L.polyline(latlngs(c.route.coords), { color: UI.colors.planned, weight: 5 }));
   add(L.circleMarker(c.route.coords[0], { radius: 7, color: '#16a34a', fillOpacity: 1 }));
+  if (c.route.turnIndex != null) add(L.circleMarker(c.route.coords[c.route.turnIndex], { radius: 6, color: '#f59e0b', fillOpacity: 1 })); // turnaround
   map.fitBounds(line.getBounds(), { padding: [20, 20] });
 }
 
 // ---------- form ----------
+const radio = (name, fallback) => document.querySelector(`input[name=${name}]:checked`)?.value ?? fallback;
+const numOrNull = (id) => { const v = $(id).value.trim(); return v === '' || !isFinite(Number(v)) ? null : Number(v); };
+
 function readForm() {
   return {
+    by: radio('by', 'time'),
     durationMin: Number($('duration').value),
     paceMinPerMile: Number($('pace').value),
+    distanceMi: Number($('distance').value),
     zip: $('zip').value.trim(),
     prefs: {
-      surface: document.querySelector('input[name=surface]:checked')?.value ?? PREF_DEFAULTS.surface,
-      terrain: document.querySelector('input[name=terrain]:checked')?.value ?? PREF_DEFAULTS.terrain,
+      surface: radio('surface', PREF_DEFAULTS.surface),
+      terrain: radio('terrain', PREF_DEFAULTS.terrain),
       endDownhill: $('endDownhill').checked,
+      shape: radio('shape', PREF_DEFAULTS.shape),
+      quiet: $('quiet').checked,
+      green: $('green').checked,
+      minEleFt: numOrNull('minEle'),
+      maxEleFt: numOrNull('maxEle'),
     },
   };
 }
+
+function showBy() {
+  const dist = radio('by', 'time') === 'distance';
+  $('byTime').hidden = dist; $('byDistance').hidden = !dist;
+  $('durationOut').textContent = `${$('duration').value} min`;
+  $('distanceOut').textContent = `${Number($('distance').value).toFixed(2)} mi`;
+}
+document.querySelectorAll('input[name=by]').forEach((el) => { el.onchange = showBy; });
+$('distance').oninput = showBy;
 
 function restoreForm() {
   $('orsKey').value = store.get(UI.storageKeys.orsKey) ?? '';
@@ -61,10 +81,15 @@ function restoreForm() {
     const f = JSON.parse(store.get(UI.storageKeys.form) ?? 'null');
     if (!f) return;
     $('duration').value = f.durationMin; $('pace').value = f.paceMinPerMile; $('zip').value = f.zip ?? '';
-    for (const n of ['surface', 'terrain']) { const el = document.querySelector(`input[name=${n}][value=${f.prefs?.[n]}]`); if (el) el.checked = true; }
+    if (f.distanceMi) $('distance').value = f.distanceMi;
+    const pick = (n, v) => { const el = document.querySelector(`input[name=${n}][value="${v}"]`); if (el) el.checked = true; };
+    pick('by', f.by); pick('surface', f.prefs?.surface); pick('terrain', f.prefs?.terrain); pick('shape', f.prefs?.shape);
     $('endDownhill').checked = !!f.prefs?.endDownhill;
+    $('quiet').checked = !!f.prefs?.quiet; $('green').checked = !!f.prefs?.green;
+    $('minEle').value = f.prefs?.minEleFt ?? ''; $('maxEle').value = f.prefs?.maxEleFt ?? '';
+    if (f.prefs?.minEleFt != null || f.prefs?.maxEleFt != null) $('eleBox').open = true;
   } catch { /* ignore */ }
-  $('durationOut').textContent = `${$('duration').value} min`;
+  showBy();
 }
 
 // ---------- how-to popup ----------
@@ -117,7 +142,11 @@ $('planBtn').onclick = async () => {
     showTiles();
     status(`Building ${CONFIG.plan.seeds} loops and scoring them…`);
     $('planBtn').disabled = true;
-    const res = await plan({ start: state.start, durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile, prefs: f.prefs, key });
+    const res = await plan({
+      start: state.start, prefs: f.prefs, key,
+      ...(f.by === 'distance' ? { distanceMi: f.distanceMi } : { durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile }),
+    });
+    state.notes = res.notes;
     state.candidates = res.candidates;
     renderCandidates(res.target);
     $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -130,17 +159,21 @@ function renderCandidates(target) {
   list.innerHTML = '';
   if (!state.candidates.length) {
     state.chosen = null; $('runBar').hidden = true; clearLayers();
-    status('No loops came back. Try again or move the start.', true); return;
+    status('No routes came back. Try again or move the start.', true); return;
   }
   const off = state.candidates[0].offTarget;
-  status(off
-    ? `Nothing within ${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${(target / 1609.344).toFixed(1)} mi here; these are the closest.`
-    : `Target ${(target / 1609.344).toFixed(2)} mi. Tap a loop, then Run it.`, off);
+  const why = state.candidates[0].offWhy ?? [];
+  const miles = (target / CONFIG.pace.metersPerMile).toFixed(off ? 1 : 2);
+  const miss = why.includes('elevation') && why.includes('length') ? `the length (${miles} mi) and elevation limits`
+    : why.includes('elevation') ? 'your elevation limits' : `${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${miles} mi`;
+  const note = state.notes?.length ? ` (${state.notes.join('; ')})` : '';
+  status((off ? `Nothing here fits ${miss}; these are the closest.` : `Target ${miles} mi. Tap a route, then Run it.`) + note, off);
   state.candidates.forEach((c, i) => {
     const m = c.metrics;
     const card = document.createElement('button');
     card.className = 'card';
-    card.innerHTML = `<b>Loop ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.offTarget ? 'off target · ' : ''}${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
+    const kind = c.route.shape === 'outback' ? 'Out & back' : 'Loop';
+    card.innerHTML = `<b>${kind} ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.offTarget ? 'off target · ' : ''}${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
     card.onclick = () => select(i);
     list.appendChild(card);
   });

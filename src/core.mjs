@@ -7,7 +7,8 @@ export const CONFIG = {
     routingBase: 'https://api.heigit.org/openrouteservice',
     geocodeBase: 'https://api.heigit.org/pelias/v1',
     profiles: { road: 'foot-walking', trail: 'foot-hiking', either: 'foot-walking' },
-    extraInfo: ['surface', 'waytype'],
+    extraInfo: ['surface', 'waytype', 'green', 'noise'], // green/noise exist for foot profiles only (all of ours)
+    weightingFactor: { green: 1, quiet: 1 }, // ORS profile_params.weightings: 0 = normal routing, 1 = strongest
     country: 'US',
   },
   plan: {
@@ -18,7 +19,12 @@ export const CONFIG = {
     distanceTolerance: 0.15, // drop candidates more than 15% off target length
     results: 3,            // candidates shown
     finishFraction: 0.2,   // "end downhill" looks at the last 20% of the route
+    outBackDetour: 1.3,    // out-and-back: road distance / straight-line distance to the turnaround, before calibration
+    elevationToleranceFt: 0, // how far past a min/max elevation limit still counts as inside
   },
+  distance: { minMi: 0.5, maxMi: 30 },
+  mainRoadWaytypes: [1, 2], // ORS waytype IDs: 1 State Road, 2 Road (3 Street, 4 Path, 5 Track, 6 Cycleway, 7 Footway)
+  repeat: { cellM: 20, nearM: 18, minApartM: 150 }, // a point "repeats" if within nearM of route >= minApartM away along it
   pace: { defaultMinPerMile: 10, metersPerMile: 1609.344, feetPerMeter: 3.28084 },
   // Surface IDs from the ORS docs; 9 and 16 are retired there but kept so old data still scores.
   unpavedSurfaces: [2, 8, 9, 10, 11, 12, 15, 16, 17],
@@ -28,6 +34,10 @@ export const CONFIG = {
     surface: 30,       // per 100% matching surface share
     hills: 2,          // per m of climb per km
     finishDrop: 1.5,   // per m of drop over the finish section
+    mainRoad: 40,      // per 100% on main roads (when "quiet streets" is on)
+    noise: 2,          // per point of average noise 0-10 (when "quiet streets" is on)
+    green: 3,          // per point of average greenness 0-10 (when "prefer green" is on)
+    repeats: 25,       // per 100% doubled back (loops only: a goal, not a rule)
   },
   track: {
     maxAccuracyM: 35,  // ignore GPS fixes worse than this
@@ -43,7 +53,13 @@ export const CONFIG = {
 // service outage, since the gateway's error replies don't carry CORS headers.
 export const NETWORK_ERROR = "Couldn't reach the routing service. Check your key in Setup (copy it again from account.heigit.org), then try again.";
 
-export const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
+export const PREF_DEFAULTS = {
+  surface: 'either', terrain: 'any', endDownhill: false,
+  shape: 'loop',        // 'loop' | 'outback'
+  quiet: false,         // prefer quiet ways, avoid main roads
+  green: false,         // prefer green (shaded-ish) ways; true shade has no data on the public ORS
+  minEleFt: null, maxEleFt: null, // optional elevation limits (feet)
+};
 
 // Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
 export const LOCATION_ERRORS = {
@@ -92,18 +108,47 @@ export function targetMeters(durationMin, paceMinPerMile = CONFIG.pace.defaultMi
   return (durationMin / paceMinPerMile) * CONFIG.pace.metersPerMile;
 }
 
+export function distanceMeters(miles, cfg = CONFIG) {
+  if (!(miles >= cfg.distance.minMi && miles <= cfg.distance.maxMi)) throw new Error(`distance must be ${cfg.distance.minMi}-${cfg.distance.maxMi} mi`);
+  return miles * cfg.pace.metersPerMile;
+}
+
+// Point `meters` away from p on a compass bearing (degrees).
+export function destination(p, meters, bearingDeg) {
+  const d = meters / R, b = rad(bearingDeg), la = rad(p.lat), lo = rad(p.lon);
+  const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+  const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+  return { lat: (la2 * 180) / Math.PI, lon: ((((lo2 * 180) / Math.PI) + 540) % 360) - 180 };
+}
+
+// Out-and-back turnarounds: n bearings spread round the compass, offset per batch so batch 2 tries new directions.
+export function turnarounds(start, meters, n, batch = 0, cfg = CONFIG) {
+  const r = meters / 2 / cfg.plan.outBackDetour;
+  return Array.from({ length: n }, (_, i) => destination(start, r, (i * 360) / n + (batch * 180) / n));
+}
+
 // ---------- ORS requests ----------
-export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
+function routeOptions(prefs, cfg, weightings = true) {
+  const o = {};
+  if (weightings && (prefs.quiet || prefs.green)) {
+    const w = {};
+    if (prefs.green) w.green = { factor: cfg.ors.weightingFactor.green };
+    if (prefs.quiet) w.quiet = { factor: cfg.ors.weightingFactor.quiet };
+    o.profile_params = { weightings: w };
+  }
+  return o;
+}
+
+// One ORS request. Loop: a round trip from `start`. Out-and-back: start -> `turn` (the way back is the same path).
+export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, weightings = true } = {}) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
+  const options = routeOptions(prefs, cfg, weightings);
+  const coordinates = [[start.lon, start.lat]];
+  if (turn) coordinates.push([turn.lon, turn.lat]);
+  else options.round_trip = { length: Math.round(meters), points: cfg.plan.loopPoints, seed };
   return {
     url: `${cfg.ors.routingBase}/v2/directions/${profile}/geojson`,
-    body: {
-      coordinates: [[start.lon, start.lat]],
-      elevation: true,
-      instructions: false,
-      extra_info: cfg.ors.extraInfo,
-      options: { round_trip: { length: Math.round(meters), points: cfg.plan.loopPoints, seed } },
-    },
+    body: { coordinates, elevation: true, instructions: false, extra_info: cfg.ors.extraInfo, options },
   };
 }
 
@@ -120,35 +165,94 @@ export function parseGeocode(json) {
 }
 
 // ORS geojson -> route object. Coordinates come back [lon, lat, ele]; we store [lat, lon, ele].
+// extras: { surface, waytype, green, noise } as [fromIndex, toIndex, value] runs, whichever ORS returned.
 export function parseRoute(json, seed = 0) {
   const f = json?.features?.[0];
   if (!f?.geometry?.coordinates?.length) throw new Error('no route in response');
   const coords = f.geometry.coordinates.map(([lon, lat, ele]) => [lat, lon, ele ?? 0]);
-  const surfaces = f.properties?.extras?.surface?.values ?? [];
-  return { seed, coords, surfaces, reversed: false };
+  const extras = {};
+  for (const [k, v] of Object.entries(f.properties?.extras ?? {})) if (Array.isArray(v?.values)) extras[k] = v.values;
+  return { seed, coords, extras, reversed: false, shape: 'loop' };
 }
+
+const remapExtras = (extras, fn) => Object.fromEntries(Object.entries(extras).map(([k, runs]) => [k, fn(runs)]));
 
 export function reverseRoute(route) {
   const n = route.coords.length - 1;
   return {
     ...route,
     coords: [...route.coords].reverse(),
-    surfaces: route.surfaces.map(([a, b, v]) => [n - b, n - a, v]).reverse(),
+    extras: remapExtras(route.extras, (runs) => runs.map(([a, b, v]) => [n - b, n - a, v]).reverse()),
     reversed: !route.reversed,
   };
 }
 
+// Out-and-back from a one-way route: the same path, then back along it.
+export function outAndBack(route) {
+  const n = route.coords.length - 1;
+  const back = reverseRoute(route);
+  return {
+    ...route,
+    shape: 'outback',
+    turnIndex: n,
+    coords: route.coords.concat(back.coords.slice(1)),
+    extras: Object.fromEntries(Object.keys(route.extras).map((k) => [k, route.extras[k].concat(back.extras[k].map(([a, b, v]) => [a + n, b + n, v]))])),
+  };
+}
+
 // ---------- metrics ----------
+// Distance-weighted share of an extra whose value passes `test` (0-1), or null if ORS didn't return that extra.
+export function extraShare(route, key, test, cum = cumulative(route.coords)) {
+  const runs = route.extras?.[key];
+  if (!runs?.length) return null;
+  const total = cum[cum.length - 1] || 1;
+  let hit = 0;
+  for (const [a, b, v] of runs) if (test(v)) hit += (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
+  return hit / total;
+}
+
+// Distance-weighted average of a 0-10 extra (green, noise), or null if missing.
+export function extraAverage(route, key, cum = cumulative(route.coords)) {
+  const runs = route.extras?.[key];
+  if (!runs?.length) return null;
+  let sum = 0, len = 0;
+  for (const [a, b, v] of runs) {
+    const l = (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
+    sum += v * l; len += l;
+  }
+  return len ? sum / len : null;
+}
+
 export function surfaceShares(route, cfg = CONFIG) {
   const cum = cumulative(route.coords);
+  return {
+    unpaved: extraShare(route, 'surface', (v) => cfg.unpavedSurfaces.includes(v), cum) ?? 0,
+    paved: extraShare(route, 'surface', (v) => cfg.pavedSurfaces.includes(v), cum) ?? 0,
+  };
+}
+
+// Share of the route's distance that passes within nearM of another part of itself (doubling back), 0-1.
+export function repeatShare(coords, cfg = CONFIG) {
+  const { cellM, nearM, minApartM } = cfg.repeat;
+  if (coords.length < 3) return 0;
+  const cum = cumulative(coords);
   const total = cum[cum.length - 1] || 1;
-  let unpaved = 0, paved = 0;
-  for (const [a, b, v] of route.surfaces) {
-    const len = (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
-    if (cfg.unpavedSurfaces.includes(v)) unpaved += len;
-    else if (cfg.pavedSurfaces.includes(v)) paved += len;
+  const latM = 111320, lonM = 111320 * Math.cos(rad(coords[0][0]));
+  const cell = (p) => [Math.floor((p[0] * latM) / cellM), Math.floor((p[1] * lonM) / cellM)];
+  const grid = new Map();
+  coords.forEach((p, i) => { const k = cell(p).join(','); (grid.get(k) ?? grid.set(k, []).get(k)).push(i); });
+  let rep = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [cy, cx] = cell(coords[i]);
+    let hit = false;
+    for (let dy = -1; dy <= 1 && !hit; dy++) for (let dx = -1; dx <= 1 && !hit; dx++) {
+      for (const j of grid.get(`${cy + dy},${cx + dx}`) ?? []) {
+        if (Math.abs(cum[i] - cum[j]) >= minApartM && haversine(coords[i], coords[j]) <= nearM) { hit = true; break; }
+      }
+    }
+    if (hit) rep += cum[i] - cum[i - 1];
   }
-  return { unpaved: unpaved / total, paved: paved / total };
+  return rep / total;
 }
 
 // Elevation lost over the last `fraction` of the route (positive = finishes downhill).
@@ -163,10 +267,28 @@ export function finishDrop(coords, fraction = CONFIG.plan.finishFraction) {
 }
 
 export function metrics(route, cfg = CONFIG) {
-  const distance = pathLength(route.coords);
+  const cum = cumulative(route.coords);
+  const distance = cum[cum.length - 1] ?? 0;
   const { ascent, descent } = climb(route.coords);
   const { unpaved, paved } = surfaceShares(route, cfg);
-  return { distance, ascent, descent, unpaved, paved, finishDrop: finishDrop(route.coords, cfg.plan.finishFraction) };
+  const eles = route.coords.map((c) => c[2] ?? 0);
+  return {
+    distance, ascent, descent, unpaved, paved,
+    finishDrop: finishDrop(route.coords, cfg.plan.finishFraction),
+    mainRoad: extraShare(route, 'waytype', (v) => cfg.mainRoadWaytypes.includes(v), cum),
+    green: extraAverage(route, 'green', cum),
+    noise: extraAverage(route, 'noise', cum),
+    minEle: Math.min(...eles), maxEle: Math.max(...eles),
+    repeats: route.shape === 'outback' ? 0 : repeatShare(route.coords, cfg),
+  };
+}
+
+// Inside the optional elevation limits (feet)?
+export function withinElevation(m, prefs, cfg = CONFIG) {
+  const ft = cfg.pace.feetPerMeter, tol = cfg.plan.elevationToleranceFt;
+  if (prefs.minEleFt != null && m.minEle * ft < prefs.minEleFt - tol) return false;
+  if (prefs.maxEleFt != null && m.maxEle * ft > prefs.maxEleFt + tol) return false;
+  return true;
 }
 
 // ---------- scoring ----------
@@ -184,6 +306,13 @@ export function score(m, prefs, target, cfg = CONFIG) {
   if (prefs.terrain === 'hilly') { s += perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
   if (prefs.terrain === 'flat') { s -= perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
   if (prefs.endDownhill) { s += m.finishDrop * w.finishDrop; reasons.push(`finish ${m.finishDrop >= 0 ? 'drops' : 'climbs'} ${Math.abs(Math.round(m.finishDrop * ft))} ft`); }
+  if (prefs.quiet) {
+    if (m.mainRoad != null) { s -= m.mainRoad * w.mainRoad; reasons.push(`${Math.round(m.mainRoad * 100)}% main road`); }
+    if (m.noise != null) s -= m.noise * w.noise;
+  }
+  if (prefs.green && m.green != null) { s += m.green * w.green; reasons.push(`green ${m.green.toFixed(1)}/10`); }
+  if (m.repeats > 0) { s -= m.repeats * w.repeats; if (m.repeats >= 0.05) reasons.push(`${Math.round(m.repeats * 100)}% doubles back`); }
+  if (prefs.minEleFt != null || prefs.maxEleFt != null) reasons.push(`${Math.round(m.minEle * ft)}-${Math.round(m.maxEle * ft)} ft elev`);
   return { score: s, reasons };
 }
 
@@ -199,9 +328,13 @@ export function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback =
   // Different seeds can return the same loop: dedupe on length + climb + midpoint, keeping the best-scoring copy.
   const seen = new Set();
   const off = (c) => Math.abs(c.metrics.distance - target) / target;
-  let pool = best.filter((c) => off(c) <= cfg.plan.distanceTolerance);
-  // Nothing close enough: show the closest few, flagged, rather than nothing.
-  if (!pool.length && fallback) pool = [...best].sort((a, b) => off(a) - off(b)).slice(0, cfg.plan.results).map((c) => ({ ...c, offTarget: true }));
+  const fitsElevation = (c) => withinElevation(c.metrics, prefs, cfg);
+  let pool = best.filter((c) => off(c) <= cfg.plan.distanceTolerance && fitsElevation(c));
+  // Nothing fits: show the closest few, flagged, rather than nothing (elevation-fitting ones first).
+  if (!pool.length && fallback) {
+    pool = [...best].sort((a, b) => (fitsElevation(b) - fitsElevation(a)) || (off(a) - off(b))).slice(0, cfg.plan.results)
+      .map((c) => ({ ...c, offTarget: true, offWhy: [off(c) > cfg.plan.distanceTolerance && 'length', !fitsElevation(c) && 'elevation'].filter(Boolean) }));
+  }
   return pool
     .sort((a, b) => b.score - a.score)
     .filter((c) => {
@@ -223,30 +356,52 @@ export function lengthRatio(routes, requested) {
   return r.length % 2 ? r[m] : (r[m - 1] + r[m]) / 2;
 }
 
-async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds }) {
-  const results = await Promise.allSettled(seeds.map(async (seed) => {
-    const req = directionsRequest(start, length, prefs, seed, cfg);
-    let res;
-    try { res = await fetchFn(req.url, {
+async function fetchOne(req, key, fetchFn) {
+  let res;
+  try {
+    res = await fetchFn(req.url, {
       method: 'POST',
       headers: { Authorization: key, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
       body: JSON.stringify(req.body),
-    }); } catch { throw new Error(NETWORK_ERROR); }
-    if (!res.ok) throw new Error(`routing failed (${res.status})`);
-    return parseRoute(await res.json(), seed);
+    });
+  } catch { throw new Error(NETWORK_ERROR); }
+  if (!res.ok) { const e = new Error(`routing failed (${res.status})`); e.status = res.status; throw e; }
+  return res.json();
+}
+
+// One batch of candidates: loops (one round trip per seed) or out-and-backs (one turnaround per direction).
+async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds, batch, weightings }) {
+  const turns = prefs.shape === 'outback' ? turnarounds(start, length, seeds.length, batch, cfg) : null;
+  const results = await Promise.allSettled(seeds.map(async (seed, i) => {
+    const req = directionsRequest(start, length, prefs, seed, cfg, { turn: turns?.[i] ?? null, weightings });
+    const r = parseRoute(await fetchOne(req, key, fetchFn), seed);
+    return turns ? outAndBack(r) : r;
   }));
+  const rejected = results.filter((r) => r.status === 'rejected').map((r) => r.reason);
   return {
     routes: results.filter((r) => r.status === 'fulfilled').map((r) => r.value),
-    error: results.find((r) => r.status === 'rejected')?.reason?.message,
+    error: rejected[0]?.message,
+    badRequest: rejected.length === results.length && rejected.every((e) => e.status === 400),
   };
 }
 
-// End to end: start + duration + prefs -> ranked loops. fetchFn is injected so tests can run offline.
-export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
+// End to end: start + target + prefs -> ranked routes. fetchFn is injected so tests can run offline.
+// Target: durationMin + paceMinPerMile, or distanceMi.
+export async function plan({ start, durationMin, paceMinPerMile, distanceMi = null, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
   if (!key) throw new Error('add your free openrouteservice key first');
-  const target = targetMeters(durationMin, paceMinPerMile);
+  prefs = { ...PREF_DEFAULTS, ...prefs };
+  const target = distanceMi != null ? distanceMeters(distanceMi, cfg) : targetMeters(durationMin, paceMinPerMile);
   const n = cfg.plan.seeds;
-  const first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => i + 1) });
+  const seedsFor = (b) => Array.from({ length: n }, (_, i) => b * n + i + 1);
+  let weightings = true;
+  let first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: seedsFor(0), batch: 0, weightings });
+  const notes = [];
+  // If ORS refuses the quiet/green weightings (all 400s), plan without them and say so; the scoring still applies.
+  if (!first.routes.length && first.badRequest && (prefs.quiet || prefs.green)) {
+    weightings = false;
+    notes.push('quiet/green routing unavailable here; scored by road type and greenness instead');
+    first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: seedsFor(0), batch: 0, weightings });
+  }
   if (!first.routes.length) throw new Error(first.error ?? 'no routes');
   let routes = first.routes;
   let requested = target;
@@ -254,10 +409,10 @@ export async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DE
     const ratio = lengthRatio(routes, target);
     const k = Math.min(cfg.plan.maxCorrection, Math.max(1 / cfg.plan.maxCorrection, 1 / ratio));
     requested = target * k;
-    const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => n + i + 1) });
+    const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: seedsFor(1), batch: 1, weightings });
     routes = routes.concat(second.routes);
   }
-  return { target, requested, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true }) };
+  return { target, requested, notes, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true }) };
 }
 
 // ---------- tracking ----------
