@@ -12,9 +12,9 @@ export const BUILD = {
   // it). Each file is verified against the hash of the published npm release before it goes in.
   vendor: [
     { marker: '/*@LEAFLET_CSS@*/', file: 'vendor/leaflet-1.9.4/leaflet.css', sha384: 'sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H',
-      banner: '/* Leaflet 1.9.4 | BSD-2-Clause | (c) 2010-2023 Volodymyr Agafonkin, (c) 2010-2011 CloudMade | full license: github.com/Leaflet/Leaflet/blob/v1.9.4/LICENSE */\n' },
+      license: 'vendor/leaflet-1.9.4/LICENSE' }, // full BSD-2-Clause text goes in front, as the license requires
     { marker: '/*@LEAFLET_JS@*/', file: 'vendor/leaflet-1.9.4/leaflet.js', sha384: 'cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH',
-      banner: '' }, // leaflet.js carries its own license header
+      license: 'vendor/leaflet-1.9.4/LICENSE' },
   ],
 };
 
@@ -29,7 +29,8 @@ export function inlineVendor(html, root, vendor) {
     const text = buf.toString('utf8');
     if (/<\/(script|style)/i.test(text)) throw new Error(`${v.file} would close its tag early`);
     if (!html.includes(v.marker)) throw new Error(`template is missing ${v.marker}`);
-    html = html.replace(v.marker, () => v.banner + text);
+    const notice = v.license ? `/*! ${readFileSync(join(root, v.license), 'utf8').replace(/\*\//g, '* /').trim()}\n*/\n` : '';
+    html = html.replace(v.marker, () => notice + text);
   }
   return html;
 }

@@ -117,7 +117,10 @@ $('planBtn').onclick = async () => {
 function renderCandidates(target) {
   const list = $('results');
   list.innerHTML = '';
-  if (!state.candidates.length) { status('No loops came back. Try again or move the start.', true); return; }
+  if (!state.candidates.length) {
+    state.chosen = null; $('runBar').hidden = true; clearLayers();
+    status('No loops came back. Try again or move the start.', true); return;
+  }
   const off = state.candidates[0].offTarget;
   status(off
     ? `Nothing within ${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${(target / 1609.344).toFixed(1)} mi here; these are the closest.`

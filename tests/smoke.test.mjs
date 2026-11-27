@@ -75,7 +75,9 @@ test('build: one page with the app inlined, no exports or local imports left, no
   // nothing loads from another host: the sprint site's publish gate rejects unlisted CDN scripts and styles
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external <script src>');
   assert.ok(!/<link[^>]+rel=["']?stylesheet/i.test(html), 'no external stylesheet');
-  assert.ok(html.includes('Leaflet 1.9.4') && html.includes('.leaflet-container'));
+  assert.ok(html.includes('.leaflet-container'));
+  assert.equal((html.match(/BSD 2-Clause License/g) ?? []).length, 2, 'full license text before the CSS and the JS');
+  assert.ok(html.includes('THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS'));
   // the run bar stays hidden until a loop is picked (a class display rule must not override [hidden])
   assert.ok(/\.bar\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(html));
   assert.ok(html.includes("if (!state.chosen) { status('Plan a run and pick a loop first.'"));
