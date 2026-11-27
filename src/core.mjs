@@ -27,7 +27,7 @@ export const CONFIG = {
   distance: { minMi: 0.5, maxMi: 30 },
   mainRoadWaytypes: [1, 2], // ORS waytype IDs: 1 State Road, 2 Road (3 Street, 4 Path, 5 Track, 6 Cycleway, 7 Footway)
   repeat: { cellM: 20, nearM: 18, minApartM: 150 },
-  history: { stepM: 25, nearM: 30, maxRuns: 200, decimals: 5 }, // "somewhere new": past runs kept on this device only // a point "repeats" if within nearM of route >= minApartM away along it
+  history: { stepM: 25, nearM: 30, maxRuns: 100, decimals: 5 }, // ~13 KB a run: 100 runs stays well under Safari's storage // "somewhere new": past runs kept on this device only // a point "repeats" if within nearM of route >= minApartM away along it
   pace: { defaultMinPerMile: 10, metersPerMile: 1609.344, feetPerMeter: 3.28084 },
   // Surface IDs from the ORS docs; 9 and 16 are retired there but kept so old data still scores.
   unpavedSurfaces: [2, 8, 9, 10, 11, 12, 15, 16, 17],
@@ -163,12 +163,16 @@ export function turnarounds(start, meters, n, batch = 0, cfg = CONFIG) {
 }
 
 // ---------- ORS requests ----------
-function routeOptions(prefs, cfg, weightings = true) {
+// ORS docs show weightings two ways ({ green: { factor: 1 } } in examples, green: 1 in the reference table), so the
+// planner tries 'object', then 'number', then none (weightings = false) if a whole batch is refused.
+export const WEIGHTING_FORMS = ['object', 'number'];
+function routeOptions(prefs, cfg, weightings = 'object') {
   const o = {};
   if (weightings && (prefs.quiet || prefs.green)) {
+    const val = (f) => (weightings === 'number' ? f : { factor: f });
     const w = {};
-    if (prefs.green) w.green = { factor: cfg.ors.weightingFactor.green };
-    if (prefs.quiet) w.quiet = { factor: cfg.ors.weightingFactor.quiet };
+    if (prefs.green) w.green = val(cfg.ors.weightingFactor.green);
+    if (prefs.quiet) w.quiet = val(cfg.ors.weightingFactor.quiet);
     o.profile_params = { weightings: w };
   }
   return o;
@@ -176,7 +180,7 @@ function routeOptions(prefs, cfg, weightings = true) {
 
 // One ORS request. Plain loop: a round trip from `start`. Otherwise start -> each waypoint in order (an
 // out-and-back's turnaround, or a via loop's via -> corner -> start).
-export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, waypoints = null, weightings = true } = {}) {
+export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, waypoints = null, weightings = 'object' } = {}) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
   const options = routeOptions(prefs, cfg, weightings);
   const coordinates = [[start.lon, start.lat]];
@@ -499,15 +503,17 @@ export async function plan({ start, durationMin, paceMinPerMile, distanceMi = nu
   const target = distanceMi != null ? distanceMeters(distanceMi, cfg) : targetMeters(durationMin, paceMinPerMile);
   const n = cfg.plan.seeds;
   const seedsFor = (b) => Array.from({ length: n }, (_, i) => b * n + i + 1);
-  let weightings = true;
-  let first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: seedsFor(0), batch: 0, weightings });
+  const weighted = prefs.quiet || prefs.green;
+  const forms = weighted ? [...WEIGHTING_FORMS, false] : [false];
+  let weightings, first;
   const notes = [];
-  // If ORS refuses the quiet/green weightings (all 400s), plan without them and say so; the scoring still applies.
-  if (!first.routes.length && first.badRequest && (prefs.quiet || prefs.green)) {
-    weightings = false;
-    notes.push('quiet/green routing unavailable here; scored by road type and greenness instead');
+  // If ORS refuses a weightings form (every request 400), try the next; with none it still scores road type and
+  // greenness. A batch with no weightings that is still all-400 is a different problem: stop and report it.
+  for (weightings of forms) {
     first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: seedsFor(0), batch: 0, weightings });
+    if (first.routes.length || !first.badRequest) break;
   }
+  if (weighted && weightings === false && first.routes.length) notes.push('quiet/green routing unavailable here; scored by road type and greenness instead');
   if (!first.routes.length) throw new Error(first.error ?? 'no routes');
   let routes = first.routes;
   let requested = target;
@@ -515,8 +521,11 @@ export async function plan({ start, durationMin, paceMinPerMile, distanceMi = nu
     const ratio = lengthRatio(routes, target);
     const k = Math.min(cfg.plan.maxCorrection, Math.max(1 / cfg.plan.maxCorrection, 1 / ratio));
     requested = target * k;
-    const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: seedsFor(1), batch: 1, weightings });
-    routes = routes.concat(second.routes);
+    // Batch 2 is a bonus: if it can't be built (e.g. a via spot too far for the corrected length), keep batch 1.
+    try {
+      const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: seedsFor(1), batch: 1, weightings });
+      routes = routes.concat(second.routes);
+    } catch { /* keep batch 1 */ }
   }
   const index = prefs.somewhereNew ? historyIndex(history, cfg) : null;
   if (prefs.somewhereNew && !index) notes.push('no saved runs yet, so nothing counts as new');

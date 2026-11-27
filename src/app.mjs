@@ -12,7 +12,7 @@ const UI = {
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage off: fine */ } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } }, // false: off or full
 };
 
 const state = { via: null, pickingVia: false, start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
@@ -78,6 +78,7 @@ function showBy() {
 document.querySelectorAll('input[name=by]').forEach((el) => { el.onchange = showBy; });
 $('distance').oninput = showBy;
 
+let restoredVia = null;
 function restoreForm() {
   $('orsKey').value = store.get(UI.storageKeys.orsKey) ?? '';
   try {
@@ -92,6 +93,7 @@ function restoreForm() {
     $('somewhereNew').checked = !!f.prefs?.somewhereNew;
     $('minEle').value = f.prefs?.minEleFt ?? ''; $('maxEle').value = f.prefs?.maxEleFt ?? '';
     if (f.prefs?.minEleFt != null || f.prefs?.maxEleFt != null) $('eleBox').open = true;
+    if (f.prefs?.via && isFinite(f.prefs.via.lat) && isFinite(f.prefs.via.lon)) { restoredVia = f.prefs.via; $('viaBox').open = true; }
   } catch { /* ignore */ }
   showBy();
 }
@@ -143,8 +145,9 @@ function loadHistory() {
   try { const h = JSON.parse(store.get(UI.storageKeys.history) ?? '[]'); return Array.isArray(h) ? h : []; } catch { return []; }
 }
 function saveRun(coords) {
-  const h = addRun(loadHistory(), coords, new Date().toISOString().slice(0, 10));
-  store.set(UI.storageKeys.history, JSON.stringify(h));
+  let h = addRun(loadHistory(), coords, new Date().toISOString().slice(0, 10));
+  // Storage full: drop the oldest runs until it fits (or give up and say so).
+  while (!store.set(UI.storageKeys.history, JSON.stringify(h)) && h.length > 1) h = h.slice(0, Math.floor(h.length * 0.8));
   showHistory();
 }
 function showHistory() {
@@ -189,6 +192,7 @@ $('useLocation').onclick = async () => {
 $('duration').oninput = () => { $('durationOut').textContent = `${$('duration').value} min`; };
 
 $('planBtn').onclick = async () => {
+  state.pickingVia = false;
   const key = $('orsKey').value.trim();
   store.set(UI.storageKeys.orsKey, key);
   const f = readForm();
@@ -360,3 +364,4 @@ $('newBtn').onclick = () => { document.body.classList.remove('done'); state.trac
 
 restoreForm();
 showHistory();
+if (restoredVia) setVia(restoredVia);

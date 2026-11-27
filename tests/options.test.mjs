@@ -24,6 +24,8 @@ test('loop request: round_trip, plus quiet/green weightings only when asked', ()
   assert.deepEqual(both.options.profile_params.weightings, { green: { factor: 1 }, quiet: { factor: 1 } });
   const off = directionsRequest(START, 5000, prefs({ quiet: true }), 1, CONFIG, { weightings: false }).body;
   assert.equal(off.options.profile_params, undefined);
+  const num = directionsRequest(START, 5000, prefs({ quiet: true, green: true }), 1, CONFIG, { weightings: 'number' }).body;
+  assert.deepEqual(num.options.profile_params.weightings, { green: 1, quiet: 1 });
 });
 
 test('out-and-back request: two coordinates, no round_trip', () => {
@@ -111,15 +113,25 @@ test('plan: out-and-back by distance, end to end with fake ORS', async () => {
   assert.ok(res.candidates.every((c) => c.route.shape === 'outback' && !c.offTarget));
 });
 
-test('plan: if ORS refuses the quiet/green weightings, it plans without them and says so', async () => {
+test('plan: weightings fall back object -> number -> none, and say so only when none worked', async () => {
+  const ok = (seed) => ({ ok: true, status: 200, json: async () => orsResponse({ sideM: 1609 + seed * 20 }) });
+  const bad = { ok: false, status: 400, json: async () => ({}) };
+  // ORS takes the plain-number form
+  const numberOnly = async (url, init) => {
+    const b = JSON.parse(init.body); const w = b.options.profile_params?.weightings;
+    return w && typeof w.quiet === 'object' ? bad : ok(b.options.round_trip.seed);
+  };
+  const r1 = await plan({ start: START, distanceMi: 4, prefs: { quiet: true }, key: 'k', fetchFn: numberOnly });
+  assert.ok(r1.candidates.length > 0);
+  assert.equal(r1.notes.length, 0);
   let refused = 0;
   const fetchFn = async (url, init) => {
     const body = JSON.parse(init.body);
-    if (body.options.profile_params) { refused++; return { ok: false, status: 400, json: async () => ({}) }; }
-    return { ok: true, status: 200, json: async () => orsResponse({ sideM: 1609 + body.options.round_trip.seed * 20 }) };
+    if (body.options.profile_params) { refused++; return bad; }
+    return ok(body.options.round_trip.seed);
   };
   const res = await plan({ start: START, distanceMi: 4, prefs: { quiet: true }, key: 'k', fetchFn });
-  assert.equal(refused, CONFIG.plan.seeds);
+  assert.equal(refused, CONFIG.plan.seeds * 2);
   assert.ok(res.candidates.length > 0);
   assert.match(res.notes.join(' '), /quiet\/green routing unavailable/);
 });
@@ -227,4 +239,21 @@ test('place search is biased to the start point', () => {
   const u = geocodeUrl('Rock Creek Park', 'k', CONFIG, { lat: 38.9, lon: -77.04 });
   assert.match(u, /focus\.point\.lat=38\.9/);
   assert.match(u, /focus\.point\.lon=-77\.04/);
+});
+
+test('plan via: if the corrected second batch would put the via spot out of reach, batch 1 is kept', async () => {
+  const via = destination(START, 2250, 0); // 1.4 mi
+  const fetchFn = async (url, init) => {
+    const b = JSON.parse(init.body);
+    // routes come back 50% too long, so calibration shrinks batch 2 below what the via spot allows
+    const coords = [];
+    for (let i = 1; i < b.coordinates.length; i++) {
+      const [lo0, la0] = b.coordinates[i - 1], [lo1, la1] = b.coordinates[i];
+      for (let k = 0; k < 20; k++) coords.push([lo0 + ((lo1 - lo0) * k) / 20, la0 + ((la1 - la0) * k) / 20 + (k % 2 ? 0.004 : 0), 50]);
+    }
+    coords.push([...b.coordinates.at(-1), 50]);
+    return { ok: true, status: 200, json: async () => ({ features: [{ geometry: { coordinates: coords }, properties: { extras: {} } }] }) };
+  };
+  const res = await plan({ start: START, distanceMi: 4, prefs: { via }, key: 'k', fetchFn });
+  assert.ok(res.candidates.length > 0, 'batch-1 routes survive');
 });
