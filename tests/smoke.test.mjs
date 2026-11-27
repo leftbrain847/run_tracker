@@ -119,7 +119,8 @@ test('live/<Project>.html matches the current build (run `npm run live` after ch
   for (const d of ['src', 'vendor']) cpSync(join(ROOT, d), join(tmp, d), { recursive: true });
   cpSync(join(ROOT, 'sprint.config.json'), join(tmp, 'sprint.config.json'));
   const want = livePage(tmp);
-  const file = join(ROOT, 'live', want.path.split('/live/')[1]);
+  const { basename } = await import('node:path');
+  const file = join(ROOT, 'live', basename(want.path));
   assert.ok(existsSync(file), `${file} is missing`);
   assert.equal(readFileSync(file, 'utf8'), want.html, 'live page is stale: run npm run live');
   assert.match(want.html, /<meta name="sprint-public" content="yes">/);

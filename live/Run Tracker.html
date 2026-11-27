@@ -770,6 +770,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   #finishBtn { background: var(--run); font-weight: 600; }
   button.link { background: none; padding: 10px 0; color: #93c5fd; text-decoration: underline; min-height: 44px; }
   dialog { background: var(--panel); color: var(--ink); border: 1px solid #334155; border-radius: 14px; padding: 16px 18px; max-width: 30rem; width: calc(100% - 28px); }
+  dialog:not([open]) { display: none; }
   dialog::backdrop { background: rgba(2, 6, 23, 0.7); }
   dialog h2 { font-size: 19px; margin: 2px 0 8px; }
   dialog ol { padding-left: 1.2em; } dialog li { margin: 6px 0; }
@@ -1286,7 +1287,9 @@ function openHowto() {
   try { d.showModal(); } catch { d.setAttribute('open', ''); } // old browsers: plain open
 }
 $('howtoBtn').onclick = openHowto;
-$('howtoClose').onclick = () => { $('howto').close?.(); $('howto').removeAttribute('open'); $('setup').open = true; $('orsKey').focus(); };
+$('howtoClose').onclick = () => { $('howto').close?.(); $('howto').removeAttribute('open'); afterHowto(); };
+$('howto').addEventListener('close', afterHowto); // Escape closes it too
+function afterHowto() { $('setup').open = true; $('orsKey').focus(); }
 
 const status = (msg, isErr = false) => { $('status').textContent = msg; $('status').className = isErr ? 'err' : ''; };
 

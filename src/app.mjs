@@ -74,7 +74,9 @@ function openHowto() {
   try { d.showModal(); } catch { d.setAttribute('open', ''); } // old browsers: plain open
 }
 $('howtoBtn').onclick = openHowto;
-$('howtoClose').onclick = () => { $('howto').close?.(); $('howto').removeAttribute('open'); $('setup').open = true; $('orsKey').focus(); };
+$('howtoClose').onclick = () => { $('howto').close?.(); $('howto').removeAttribute('open'); afterHowto(); };
+$('howto').addEventListener('close', afterHowto); // Escape closes it too
+function afterHowto() { $('setup').open = true; $('orsKey').focus(); }
 
 const status = (msg, isErr = false) => { $('status').textContent = msg; $('status').className = isErr ? 'err' : ''; };
 
