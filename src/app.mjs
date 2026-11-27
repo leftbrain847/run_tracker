@@ -18,7 +18,13 @@ const state = { start: null, candidates: [], chosen: null, track: null, watchId:
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false }).setView([38.9, -77.04], 12);
-L.tileLayer(UI.tiles.url, { attribution: UI.tiles.attribution, maxZoom: UI.tiles.maxZoom }).addTo(map);
+// Tiles load only once there's a start point: an untouched page makes no third-party requests (and fewer OSM hits).
+let tiles = null;
+function showTiles() {
+  if (tiles) return;
+  tiles = L.tileLayer(UI.tiles.url, { attribution: UI.tiles.attribution, maxZoom: UI.tiles.maxZoom }).addTo(map);
+  document.getElementById('map').classList.add('live');
+}
 const clearLayers = () => { state.layers.forEach((l) => l.remove()); state.layers = []; };
 const add = (l) => { l.addTo(map); state.layers.push(l); return l; };
 const latlngs = (coords) => coords.map(([a, b]) => [a, b]);
@@ -76,7 +82,7 @@ function locate() {
 
 $('useLocation').onclick = async () => {
   status('Finding you…');
-  try { state.start = await locate(); $('zip').value = ''; status('Using your location.'); map.setView([state.start.lat, state.start.lon], 14); }
+  try { state.start = await locate(); $('zip').value = ''; status('Using your location.'); showTiles(); map.setView([state.start.lat, state.start.lon], 14); }
   catch (e) { status(e.message, true); }
 };
 
@@ -97,6 +103,7 @@ $('planBtn').onclick = async () => {
       state.start = parseGeocode(await r.json());
     }
     if (!state.start) throw new Error('tap "Use my location" or type a zip');
+    showTiles();
     status(`Building ${CONFIG.plan.seeds} loops and scoring them…`);
     $('planBtn').disabled = true;
     const res = await plan({ start: state.start, durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile, prefs: f.prefs, key });
@@ -175,7 +182,9 @@ function tick() {
 }
 
 $('startBtn').onclick = () => {
+  if (!state.chosen) { status('Plan a run and pick a loop first.', true); return; }
   if (!navigator.geolocation) { status('no GPS on this device', true); return; }
+  showTiles();
   state.track = newTrack();
   state.paused = false;
   $('pauseBtn').textContent = 'Pause';

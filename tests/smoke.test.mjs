@@ -69,8 +69,19 @@ test('plan: needs a key, and reports routing errors', async () => {
 test('build: one page with the app inlined, no exports or local imports left, no external fonts', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rt-'));
   cpSync(join(ROOT, 'src'), join(tmp, 'src'), { recursive: true });
+  cpSync(join(ROOT, 'vendor'), join(tmp, 'vendor'), { recursive: true });
   const { html } = build(tmp);
   assert.ok(html.includes('function rankCandidates'));
+  // nothing loads from another host: the sprint site's publish gate rejects unlisted CDN scripts and styles
+  assert.ok(!/<script[^>]+src=/i.test(html), 'no external <script src>');
+  assert.ok(!/<link[^>]+rel=["']?stylesheet/i.test(html), 'no external stylesheet');
+  assert.ok(html.includes('Leaflet 1.9.4') && html.includes('.leaflet-container'));
+  // the run bar stays hidden until a loop is picked (a class display rule must not override [hidden])
+  assert.ok(/\.bar\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(html));
+  assert.ok(html.includes("if (!state.chosen) { status('Plan a run and pick a loop first.'"));
+  // map tiles are added only by showTiles(), never on load
+  assert.equal((html.match(/L\.tileLayer\(/g) ?? []).length, 1);
+  assert.ok(/function showTiles\(\)[\s\S]*?L\.tileLayer\(/.test(html));
   assert.ok(html.includes("getElementById('planBtn')") || html.includes('planBtn'));
   assert.ok(!/^\s*export\s/m.test(html));
   assert.ok(!/from\s+['"]\.\/core\.mjs['"]/.test(html));
@@ -80,9 +91,18 @@ test('build: one page with the app inlined, no exports or local imports left, no
   for (const tag of html.match(/<(script|link)[^>]+(src|href)="https:[^"]+"[^>]*>/g) ?? []) assert.match(tag, /integrity="sha384-/, tag);
 });
 
+test('build refuses a vendored file that does not match its pinned hash', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rt-'));
+  cpSync(join(ROOT, 'src'), join(tmp, 'src'), { recursive: true });
+  cpSync(join(ROOT, 'vendor'), join(tmp, 'vendor'), { recursive: true });
+  writeFileSync(join(tmp, 'vendor/leaflet-1.9.4/leaflet.js'), 'tampered');
+  assert.throws(() => build(tmp), /pinned hash/);
+});
+
 test('build output parses as a JS module', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rt-'));
   cpSync(join(ROOT, 'src'), join(tmp, 'src'), { recursive: true });
+  cpSync(join(ROOT, 'vendor'), join(tmp, 'vendor'), { recursive: true });
   const { html } = build(tmp);
   const js = html.split('<script type="module">')[1].split('</script>')[0];
   const file = join(tmp, 'inline.mjs');
