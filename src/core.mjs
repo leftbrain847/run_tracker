@@ -20,6 +20,8 @@ export const CONFIG = {
     results: 3,            // candidates shown
     finishFraction: 0.2,   // "end downhill" looks at the last 20% of the route
     outBackDetour: 1.3,    // out-and-back: road distance / straight-line distance to the turnaround, before calibration
+    viaLoopAngles: [45, -45, 90, -90, 135, -135], // via loops: third corner's angle off the start->via line, batch 1
+    viaOutBackSpread: [0, 25, -25, 50, -50, 75],  // via out-and-backs: turn bearing beyond the via spot, batch 1
     elevationToleranceFt: 0, // how far past a min/max elevation limit still counts as inside
   },
   distance: { minMi: 0.5, maxMi: 30 },
@@ -62,6 +64,7 @@ export const PREF_DEFAULTS = {
   green: false,         // prefer green (shaded-ish) ways; true shade has no data on the public ORS
   minEleFt: null, maxEleFt: null, // optional elevation limits (feet)
   somewhereNew: false,  // prefer ground you haven't run (needs saved runs)
+  via: null,            // { lat, lon, label }: a spot the route must pass
 };
 
 // Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
@@ -124,6 +127,35 @@ export function destination(p, meters, bearingDeg) {
   return { lat: (la2 * 180) / Math.PI, lon: ((((lo2 * 180) / Math.PI) + 540) % 360) - 180 };
 }
 
+export function bearing(a, b) {
+  const la1 = rad(a.lat), la2 = rad(b.lat), dl = rad(b.lon - a.lon);
+  const y = Math.sin(dl) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dl);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+const straight = (a, b) => haversine([a.lat, a.lon], [b.lat, b.lon]);
+
+// Via loops: start -> via -> corner -> start. For each angle off the start->via line, put the corner where the
+// triangle's straight-line perimeter is length/detour: r = (c^2 - a^2) / (2(c - a cos phi)), c = L - a, a = |start-via|.
+export function viaLoopCorners(start, via, length, n, batch = 0, cfg = CONFIG) {
+  const a = straight(start, via), L = length / cfg.plan.outBackDetour, c = L - a;
+  if (c <= a) throw new Error(`the via spot is ${(a / cfg.pace.metersPerMile).toFixed(1)} mi away: too far for a loop this long. Go longer, or pick a closer spot.`);
+  const b0 = bearing(start, via);
+  const angles = cfg.plan.viaLoopAngles.map((t) => t + batch * 22.5).slice(0, n);
+  return angles.map((phi) => {
+    const r = (c * c - a * a) / (2 * (c - a * Math.cos(rad(phi))));
+    return destination(start, r, b0 + phi);
+  });
+}
+
+// Via out-and-backs: run through the via spot and turn further on, so the whole thing is `length`.
+export function viaTurns(start, via, length, n, batch = 0, cfg = CONFIG) {
+  const a = straight(start, via), R = length / 2 / cfg.plan.outBackDetour;
+  if (R <= a) throw new Error(`the via spot is ${(a / cfg.pace.metersPerMile).toFixed(1)} mi away: an out-and-back through it is longer than your target. Go longer, or pick a closer spot.`);
+  const b0 = bearing(start, via);
+  return cfg.plan.viaOutBackSpread.slice(0, n).map((d) => destination(via, R - a, b0 + d + batch * 12.5));
+}
+
 // Out-and-back turnarounds: n bearings spread round the compass, offset per batch so batch 2 tries new directions.
 export function turnarounds(start, meters, n, batch = 0, cfg = CONFIG) {
   const r = meters / 2 / cfg.plan.outBackDetour;
@@ -142,12 +174,14 @@ function routeOptions(prefs, cfg, weightings = true) {
   return o;
 }
 
-// One ORS request. Loop: a round trip from `start`. Out-and-back: start -> `turn` (the way back is the same path).
-export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, weightings = true } = {}) {
+// One ORS request. Plain loop: a round trip from `start`. Otherwise start -> each waypoint in order (an
+// out-and-back's turnaround, or a via loop's via -> corner -> start).
+export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, waypoints = null, weightings = true } = {}) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
   const options = routeOptions(prefs, cfg, weightings);
   const coordinates = [[start.lon, start.lat]];
-  if (turn) coordinates.push([turn.lon, turn.lat]);
+  const stops = waypoints ?? (turn ? [turn] : null);
+  if (stops) for (const p of stops) coordinates.push([p.lon, p.lat]);
   else options.round_trip = { length: Math.round(meters), points: cfg.plan.loopPoints, seed };
   return {
     url: `${cfg.ors.routingBase}/v2/directions/${profile}/geojson`,
@@ -155,8 +189,9 @@ export function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { tu
   };
 }
 
-export function geocodeUrl(text, key, cfg = CONFIG) {
+export function geocodeUrl(text, key, cfg = CONFIG, near = null) {
   const q = new URLSearchParams({ api_key: key, text, size: '1', 'boundary.country': cfg.ors.country });
+  if (near) { q.set('focus.point.lat', String(near.lat)); q.set('focus.point.lon', String(near.lon)); } // nearest match first
   return `${cfg.ors.geocodeBase}/search?${q}`;
 }
 
@@ -431,12 +466,22 @@ async function fetchOne(req, key, fetchFn) {
 }
 
 // One batch of candidates: loops (one round trip per seed) or out-and-backs (one turnaround per direction).
+// Waypoints per candidate (null = plain round trip), and whether the fetched path is the out leg of an out-and-back.
+export function candidateStops(start, length, prefs, n, batch, cfg = CONFIG) {
+  const out = prefs.shape === 'outback';
+  const v = prefs.via;
+  if (v && out) return { out, stops: viaTurns(start, v, length, n, batch, cfg).map((t) => [v, t]) };
+  if (v) return { out, stops: viaLoopCorners(start, v, length, n, batch, cfg).map((c) => [v, c, start]) };
+  if (out) return { out, stops: turnarounds(start, length, n, batch, cfg).map((t) => [t]) };
+  return { out, stops: Array(n).fill(null) };
+}
+
 async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds, batch, weightings }) {
-  const turns = prefs.shape === 'outback' ? turnarounds(start, length, seeds.length, batch, cfg) : null;
+  const { out, stops } = candidateStops(start, length, prefs, seeds.length, batch, cfg);
   const results = await Promise.allSettled(seeds.map(async (seed, i) => {
-    const req = directionsRequest(start, length, prefs, seed, cfg, { turn: turns?.[i] ?? null, weightings });
+    const req = directionsRequest(start, length, prefs, seed, cfg, { waypoints: stops[i], weightings });
     const r = parseRoute(await fetchOne(req, key, fetchFn), seed);
-    return turns ? outAndBack(r) : r;
+    return out ? outAndBack(r) : r;
   }));
   const rejected = results.filter((r) => r.status === 'rejected').map((r) => r.reason);
   return {

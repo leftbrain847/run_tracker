@@ -15,7 +15,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage off: fine */ } },
 };
 
-const state = { start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
+const state = { via: null, pickingVia: false, start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false }).setView([38.9, -77.04], 12);
@@ -64,6 +64,7 @@ function readForm() {
       minEleFt: numOrNull('minEle'),
       maxEleFt: numOrNull('maxEle'),
       somewhereNew: $('somewhereNew').checked,
+      via: state.via,
     },
   };
 }
@@ -94,6 +95,48 @@ function restoreForm() {
   } catch { /* ignore */ }
   showBy();
 }
+
+// ---------- via a spot ----------
+let viaMarker = null;
+function setVia(v) {
+  state.via = v;
+  viaMarker?.remove(); viaMarker = null;
+  if (v) {
+    showTiles();
+    viaMarker = L.circleMarker([v.lat, v.lon], { radius: 8, color: '#a855f7', fillOpacity: 1 }).addTo(map);
+    $('viaLine').innerHTML = `Via: <b>${escapeHtml(v.label || `${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}`)}</b> <button id="viaClear" type="button" class="link">Clear</button>`;
+    $('viaClear').onclick = () => setVia(null);
+  } else {
+    $('viaLine').textContent = 'Loops pass through it; out-and-backs run through it and turn further on.';
+  }
+}
+$('viaFind').onclick = async () => {
+  const text = $('viaText').value.trim();
+  const key = $('orsKey').value.trim();
+  if (!text) { status('Type a place to go via, or tap the map.', true); return; }
+  if (!key) { openHowto(); return; }
+  try {
+    let r;
+    try { r = await fetch(geocodeUrl(text, key, CONFIG, state.start)); } catch { throw new Error(NETWORK_ERROR); }
+    if (!r.ok) throw new Error(`place lookup failed (${r.status})`);
+    const v = parseGeocode(await r.json());
+    setVia(v);
+    map.setView([v.lat, v.lon], 14);
+    status('Via spot set. Plan your run.');
+  } catch (e) { status(e.message, true); }
+};
+$('viaTap').onclick = () => {
+  state.pickingVia = true;
+  showTiles();
+  document.getElementById('map').scrollIntoView({ behavior: 'smooth' });
+  status('Tap the map where you want to go through.');
+};
+map.on('click', (e) => {
+  if (!state.pickingVia) return;
+  state.pickingVia = false;
+  setVia({ lat: e.latlng.lat, lon: e.latlng.lng, label: 'spot on the map' });
+  status('Via spot set. Plan your run.');
+});
 
 // ---------- saved runs ("somewhere new") ----------
 function loadHistory() {
@@ -155,7 +198,7 @@ $('planBtn').onclick = async () => {
     if (f.zip) {
       status('Looking up zip…');
       let r;
-      try { r = await fetch(geocodeUrl(f.zip, key)); } catch { throw new Error(NETWORK_ERROR); }
+      try { r = await fetch(geocodeUrl(f.zip, key, CONFIG)); } catch { throw new Error(NETWORK_ERROR); }
       if (!r.ok) throw new Error(`zip lookup failed (${r.status})`);
       state.start = parseGeocode(await r.json());
     }

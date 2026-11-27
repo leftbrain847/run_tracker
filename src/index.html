@@ -125,6 +125,15 @@
       <label><input type="checkbox" id="somewhereNew"> somewhere new</label>
       <p class="small" id="historyLine"></p>
     </fieldset>
+    <details id="viaBox">
+      <summary>Go via a spot (optional)</summary>
+      <div class="row">
+        <input id="viaText" type="text" placeholder="park, landmark, address" style="flex:1;min-width:10em">
+        <button id="viaFind" type="button">Find</button>
+        <button id="viaTap" type="button">Tap map</button>
+      </div>
+      <p class="small" id="viaLine">Loops pass through it; out-and-backs run through it and turn further on.</p>
+    </details>
     <details id="eleBox">
       <summary>Elevation limits (optional)</summary>
       <div class="row">

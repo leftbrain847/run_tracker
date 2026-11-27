@@ -158,3 +158,73 @@ test('somewhere new: ranking prefers the unrun loop and says how new it is', asy
     fetchFn: async () => ({ ok: true, status: 200, json: async () => orsResponse({ sideM: 1000 }) }) });
   assert.match(res.notes.join(' '), /no saved runs yet/);
 });
+
+// ---------- via a spot ----------
+import { viaLoopCorners, viaTurns, bearing, candidateStops, geocodeUrl } from '../src/core.mjs';
+
+const pt = (p) => [p.lat, p.lon];
+const straightM = (a, b) => haversine(pt(a), pt(b));
+
+test('via loop corners: straight-line triangle start -> via -> corner -> start = length / detour', () => {
+  const via = destination(START, 1500, 30);
+  const L = 8000;
+  const corners = viaLoopCorners(START, via, L, 6);
+  assert.equal(corners.length, 6);
+  for (const c of corners) {
+    const per = straightM(START, via) + straightM(via, c) + straightM(c, START);
+    assert.ok(Math.abs(per - L / CONFIG.plan.outBackDetour) < 5, `perimeter ${per}`);
+  }
+  assert.throws(() => viaLoopCorners(START, destination(START, 4000, 0), 6000, 6), /too far for a loop/);
+});
+
+test('via out-and-back: runs through the via spot and turns further on, so out ~ half the length', () => {
+  const via = destination(START, 1000, 90);
+  const turns = viaTurns(START, via, 6000, 6);
+  for (const t of turns) {
+    const out = straightM(START, via) + straightM(via, t);
+    assert.ok(Math.abs(out - 3000 / CONFIG.plan.outBackDetour) < 5);
+  }
+  assert.ok(Math.abs(bearing(via, turns[0]) - bearing(START, via)) < 1, 'first turn continues straight on');
+  assert.throws(() => viaTurns(START, destination(START, 3000, 0), 4000, 6), /longer than your target/);
+});
+
+test('candidate stops: right waypoints for each mode', () => {
+  const via = destination(START, 800, 0);
+  const p = (x) => prefs(x);
+  assert.deepEqual(candidateStops(START, 5000, p(), 3, 0).stops, [null, null, null]);
+  assert.equal(candidateStops(START, 5000, p({ shape: 'outback' }), 3, 0).stops[0].length, 1);
+  const vl = candidateStops(START, 5000, p({ via }), 3, 0);
+  assert.equal(vl.out, false);
+  assert.deepEqual(vl.stops[0][0], via);
+  assert.deepEqual(vl.stops[0][2], START);
+  const vo = candidateStops(START, 5000, p({ via, shape: 'outback' }), 3, 0);
+  assert.equal(vo.out, true);
+  assert.equal(vo.stops[0].length, 2);
+});
+
+test('plan via a spot: requests go through it, and a too-far spot gives a readable error', async () => {
+  const via = destination(START, 1200, 45);
+  const seen = [];
+  const fetchFn = async (url, init) => {
+    const b = JSON.parse(init.body);
+    seen.push(b.coordinates);
+    // fake road path: straight segments between the waypoints, a little longer than straight
+    const coords = [];
+    for (let i = 1; i < b.coordinates.length; i++) {
+      const [lo0, la0] = b.coordinates[i - 1], [lo1, la1] = b.coordinates[i];
+      for (let k = 0; k < 20; k++) coords.push([lo0 + ((lo1 - lo0) * k) / 20, la0 + ((la1 - la0) * k) / 20, 50]);
+    }
+    coords.push([...b.coordinates.at(-1), 50]);
+    return { ok: true, status: 200, json: async () => ({ features: [{ geometry: { coordinates: coords }, properties: { extras: {} } }] }) };
+  };
+  const res = await plan({ start: START, distanceMi: 4, prefs: { via }, key: 'k', fetchFn });
+  assert.ok(seen.every((c) => c.length === 4 && c[1][0] === via.lon && c[1][1] === via.lat));
+  assert.ok(res.candidates.length > 0);
+  await assert.rejects(plan({ start: START, distanceMi: 1, prefs: { via: destination(START, 3000, 0) }, key: 'k', fetchFn }), /too far for a loop/);
+});
+
+test('place search is biased to the start point', () => {
+  const u = geocodeUrl('Rock Creek Park', 'k', CONFIG, { lat: 38.9, lon: -77.04 });
+  assert.match(u, /focus\.point\.lat=38\.9/);
+  assert.match(u, /focus\.point\.lon=-77\.04/);
+});
