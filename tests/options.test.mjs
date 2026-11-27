@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import {
   CONFIG, directionsRequest, parseRoute, outAndBack, metrics, repeatShare, withinElevation, rankCandidates, plan,
   turnarounds, destination, haversine, distanceMeters, score, PREF_DEFAULTS,
+  downsample, addRun, historyIndex, noveltyShare,
 } from '../src/core.mjs';
 import { orsResponse, orsLine, START } from './fixtures.mjs';
 
@@ -121,4 +122,39 @@ test('plan: if ORS refuses the quiet/green weightings, it plans without them and
   assert.equal(refused, CONFIG.plan.seeds);
   assert.ok(res.candidates.length > 0);
   assert.match(res.notes.join(' '), /quiet\/green routing unavailable/);
+});
+
+test('somewhere new: saved runs are downsampled, newest first, capped', () => {
+  const loop = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  const dense = parseRoute(orsLine(destination(START, 2000, 45), { n: 400 })).coords; // 5 m apart
+  const pts = downsample(dense);
+  assert.ok(pts.length >= 2000 / 30 && pts.length <= 2000 / CONFIG.history.stepM + 2, `${pts.length} points`); // one every 25-30 m
+  assert.equal(pts[0].length, 2);
+  let h = [];
+  for (let i = 0; i < CONFIG.history.maxRuns + 5; i++) h = addRun(h, loop, `d${i}`);
+  assert.equal(h.length, CONFIG.history.maxRuns);
+  assert.equal(h[0].date, `d${CONFIG.history.maxRuns + 4}`);
+  assert.deepEqual(addRun(h, [[1, 1, 0]], 'x'), h, 'too short to save');
+});
+
+test('somewhere new: a route you ran is ~0% new; a route elsewhere is ~100% new', () => {
+  const here = parseRoute(orsResponse({ sideM: 1000 })).coords;
+  const idx = historyIndex(addRun([], here, '2026-11-27'));
+  assert.ok(noveltyShare(here, idx) < 0.05);
+  const far = here.map(([la, lo, e]) => [la + 0.05, lo, e]);
+  assert.ok(noveltyShare(far, idx) > 0.95);
+  assert.equal(noveltyShare(here, historyIndex([])), null);
+});
+
+test('somewhere new: ranking prefers the unrun loop and says how new it is', async () => {
+  const ran = parseRoute(orsResponse({ sideM: 1000 }), 1);
+  const fresh = parseRoute({ ...orsResponse({ sideM: 1010 }) }, 2);
+  fresh.coords = fresh.coords.map(([la, lo, e]) => [la + 0.02, lo, e]);
+  const history = addRun([], ran.coords, 'd');
+  const r = rankCandidates([ran, fresh], prefs({ somewhereNew: true }), 4000, CONFIG, { history: historyIndex(history) });
+  assert.equal(r[0].route.seed, 2);
+  assert.ok(r[0].reasons.some((x) => /100% new to you/.test(x)));
+  const res = await plan({ start: START, distanceMi: 2.5, prefs: { somewhereNew: true }, key: 'k',
+    fetchFn: async () => ({ ok: true, status: 200, json: async () => orsResponse({ sideM: 1000 }) }) });
+  assert.match(res.notes.join(' '), /no saved runs yet/);
 });

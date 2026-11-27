@@ -122,6 +122,8 @@
       <legend>Prefer</legend>
       <label><input type="checkbox" id="quiet"> quiet streets (avoid main roads)</label>
       <label><input type="checkbox" id="green"> green / shady</label>
+      <label><input type="checkbox" id="somewhereNew"> somewhere new</label>
+      <p class="small" id="historyLine"></p>
     </fieldset>
     <details id="eleBox">
       <summary>Elevation limits (optional)</summary>
@@ -162,6 +164,7 @@
 
 <div id="runBar" class="bar" hidden>
   <button id="gpxBtn" type="button">GPX for watch</button>
+  <button id="ranBtn" type="button" title="Ran it with your watch? Save it so 'somewhere new' knows">I ran this</button>
   <button id="startBtn" class="go" type="button">Run it</button>
 </div>
 <div id="liveBar" class="bar">

@@ -24,7 +24,8 @@ export const CONFIG = {
   },
   distance: { minMi: 0.5, maxMi: 30 },
   mainRoadWaytypes: [1, 2], // ORS waytype IDs: 1 State Road, 2 Road (3 Street, 4 Path, 5 Track, 6 Cycleway, 7 Footway)
-  repeat: { cellM: 20, nearM: 18, minApartM: 150 }, // a point "repeats" if within nearM of route >= minApartM away along it
+  repeat: { cellM: 20, nearM: 18, minApartM: 150 },
+  history: { stepM: 25, nearM: 30, maxRuns: 200, decimals: 5 }, // "somewhere new": past runs kept on this device only // a point "repeats" if within nearM of route >= minApartM away along it
   pace: { defaultMinPerMile: 10, metersPerMile: 1609.344, feetPerMeter: 3.28084 },
   // Surface IDs from the ORS docs; 9 and 16 are retired there but kept so old data still scores.
   unpavedSurfaces: [2, 8, 9, 10, 11, 12, 15, 16, 17],
@@ -38,6 +39,7 @@ export const CONFIG = {
     noise: 2,          // per point of average noise 0-10 (when "quiet streets" is on)
     green: 3,          // per point of average greenness 0-10 (when "prefer green" is on)
     repeats: 25,       // per 100% doubled back (loops only: a goal, not a rule)
+    novelty: 30,       // per 100% new ground (when "somewhere new" is on)
   },
   track: {
     maxAccuracyM: 35,  // ignore GPS fixes worse than this
@@ -59,6 +61,7 @@ export const PREF_DEFAULTS = {
   quiet: false,         // prefer quiet ways, avoid main roads
   green: false,         // prefer green (shaded-ish) ways; true shade has no data on the public ORS
   minEleFt: null, maxEleFt: null, // optional elevation limits (feet)
+  somewhereNew: false,  // prefer ground you haven't run (needs saved runs)
 };
 
 // Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
@@ -266,7 +269,7 @@ export function finishDrop(coords, fraction = CONFIG.plan.finishFraction) {
   return (coords[i][2] ?? 0) - (coords[coords.length - 1][2] ?? 0);
 }
 
-export function metrics(route, cfg = CONFIG) {
+export function metrics(route, cfg = CONFIG, { history = null } = {}) {
   const cum = cumulative(route.coords);
   const distance = cum[cum.length - 1] ?? 0;
   const { ascent, descent } = climb(route.coords);
@@ -280,7 +283,64 @@ export function metrics(route, cfg = CONFIG) {
     noise: extraAverage(route, 'noise', cum),
     minEle: Math.min(...eles), maxEle: Math.max(...eles),
     repeats: route.shape === 'outback' ? 0 : repeatShare(route.coords, cfg),
+    novelty: history ? noveltyShare(route.coords, history) : null,
   };
+}
+
+// ---------- somewhere new ----------
+// Points every stepM along a path, rounded: what a saved run keeps (small enough for browser storage).
+export function downsample(coords, cfg = CONFIG) {
+  const { stepM, decimals } = cfg.history;
+  const out = [];
+  let since = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    if (i) since += haversine(coords[i - 1], coords[i]);
+    if (since >= stepM || i === coords.length - 1) {
+      out.push([+coords[i][0].toFixed(decimals), +coords[i][1].toFixed(decimals)]);
+      since = 0;
+    }
+  }
+  return out;
+}
+
+// Add a run (newest first), keeping at most maxRuns. Pure: returns a new list.
+export function addRun(history, coords, date, cfg = CONFIG) {
+  const pts = downsample(coords, cfg);
+  if (pts.length < 2) return history;
+  return [{ date, pts }, ...(history ?? [])].slice(0, cfg.history.maxRuns);
+}
+
+// Grid of every saved point, for fast "have I been near here?" checks.
+export function historyIndex(history, cfg = CONFIG) {
+  const runs = history ?? [];
+  if (!runs.length) return null;
+  const lat0 = runs[0].pts[0][0];
+  const cellM = cfg.history.nearM;
+  const latM = 111320, lonM = 111320 * Math.cos(rad(lat0));
+  const cell = (p) => [Math.floor((p[0] * latM) / cellM), Math.floor((p[1] * lonM) / cellM)];
+  const grid = new Map();
+  for (const r of runs) for (const p of r.pts) { const k = cell(p).join(','); (grid.get(k) ?? grid.set(k, []).get(k)).push(p); }
+  return { grid, cell, nearM: cfg.history.nearM };
+}
+
+// Share of a route's distance (0-1) more than nearM from any saved run. Saved points are stepM apart, so the
+// threshold covers the gap between them.
+export function noveltyShare(coords, index) {
+  if (!index || coords.length < 2) return null;
+  const known = (p) => {
+    const [cy, cx] = index.cell(p);
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      for (const q of index.grid.get(`${cy + dy},${cx + dx}`) ?? []) if (haversine(p, q) <= index.nearM) return true;
+    }
+    return false;
+  };
+  let fresh = 0, total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversine(coords[i - 1], coords[i]);
+    total += d;
+    if (!known(coords[i])) fresh += d;
+  }
+  return total ? fresh / total : null;
 }
 
 // Inside the optional elevation limits (feet)?
@@ -311,16 +371,17 @@ export function score(m, prefs, target, cfg = CONFIG) {
     if (m.noise != null) s -= m.noise * w.noise;
   }
   if (prefs.green && m.green != null) { s += m.green * w.green; reasons.push(`green ${m.green.toFixed(1)}/10`); }
+  if (prefs.somewhereNew && m.novelty != null) { s += m.novelty * w.novelty; reasons.push(`${Math.round(m.novelty * 100)}% new to you`); }
   if (m.repeats > 0) { s -= m.repeats * w.repeats; if (m.repeats >= 0.05) reasons.push(`${Math.round(m.repeats * 100)}% doubles back`); }
   if (prefs.minEleFt != null || prefs.maxEleFt != null) reasons.push(`${Math.round(m.minEle * ft)}-${Math.round(m.maxEle * ft)} ft elev`);
   return { score: s, reasons };
 }
 
 // Each loop is tried both ways round; keep the better direction, drop off-length loops, rank.
-export function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false } = {}) {
+export function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false, history = null } = {}) {
   const best = routes.map((r) => {
     const opts = [r, reverseRoute(r)].map((x) => {
-      const m = metrics(x, cfg);
+      const m = metrics(x, cfg, { history });
       return { route: x, metrics: m, ...score(m, prefs, target, cfg) };
     });
     return opts[0].score >= opts[1].score ? opts[0] : opts[1];
@@ -387,7 +448,7 @@ async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds, batc
 
 // End to end: start + target + prefs -> ranked routes. fetchFn is injected so tests can run offline.
 // Target: durationMin + paceMinPerMile, or distanceMi.
-export async function plan({ start, durationMin, paceMinPerMile, distanceMi = null, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
+export async function plan({ start, durationMin, paceMinPerMile, distanceMi = null, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG, history = null }) {
   if (!key) throw new Error('add your free openrouteservice key first');
   prefs = { ...PREF_DEFAULTS, ...prefs };
   const target = distanceMi != null ? distanceMeters(distanceMi, cfg) : targetMeters(durationMin, paceMinPerMile);
@@ -412,7 +473,9 @@ export async function plan({ start, durationMin, paceMinPerMile, distanceMi = nu
     const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: seedsFor(1), batch: 1, weightings });
     routes = routes.concat(second.routes);
   }
-  return { target, requested, notes, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true }) };
+  const index = prefs.somewhereNew ? historyIndex(history, cfg) : null;
+  if (prefs.somewhereNew && !index) notes.push('no saved runs yet, so nothing counts as new');
+  return { target, requested, notes, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true, history: index }) };
 }
 
 // ---------- tracking ----------

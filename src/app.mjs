@@ -1,11 +1,12 @@
 // run_tracker UI. Imports core; the build inlines both into one page.
-import { CONFIG, PREF_DEFAULTS, NETWORK_ERROR, locationMessage, plan, geocodeUrl, parseGeocode, newTrack, addFix, runSegments, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
+import { addRun, CONFIG, PREF_DEFAULTS, NETWORK_ERROR, locationMessage, plan, geocodeUrl, parseGeocode, newTrack, addFix, runSegments, trackStats, toGpx, fmtDuration, fmtPace } from './core.mjs';
 
 const UI = {
-  storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form' },
+  storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form', history: 'run_tracker.history' },
   colors: { planned: '#2563eb', alt: '#94a3b8', track: '#dc2626', gap: '#dc2626' },
   tiles: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 },
   tickMs: 1000,
+  minSavedRunM: 200, // shorter runs aren't saved to "somewhere new" history
 };
 
 const $ = (id) => document.getElementById(id);
@@ -62,6 +63,7 @@ function readForm() {
       green: $('green').checked,
       minEleFt: numOrNull('minEle'),
       maxEleFt: numOrNull('maxEle'),
+      somewhereNew: $('somewhereNew').checked,
     },
   };
 }
@@ -86,10 +88,29 @@ function restoreForm() {
     pick('by', f.by); pick('surface', f.prefs?.surface); pick('terrain', f.prefs?.terrain); pick('shape', f.prefs?.shape);
     $('endDownhill').checked = !!f.prefs?.endDownhill;
     $('quiet').checked = !!f.prefs?.quiet; $('green').checked = !!f.prefs?.green;
+    $('somewhereNew').checked = !!f.prefs?.somewhereNew;
     $('minEle').value = f.prefs?.minEleFt ?? ''; $('maxEle').value = f.prefs?.maxEleFt ?? '';
     if (f.prefs?.minEleFt != null || f.prefs?.maxEleFt != null) $('eleBox').open = true;
   } catch { /* ignore */ }
   showBy();
+}
+
+// ---------- saved runs ("somewhere new") ----------
+function loadHistory() {
+  try { const h = JSON.parse(store.get(UI.storageKeys.history) ?? '[]'); return Array.isArray(h) ? h : []; } catch { return []; }
+}
+function saveRun(coords) {
+  const h = addRun(loadHistory(), coords, new Date().toISOString().slice(0, 10));
+  store.set(UI.storageKeys.history, JSON.stringify(h));
+  showHistory();
+}
+function showHistory() {
+  const n = loadHistory().length;
+  $('historyLine').innerHTML = n
+    ? `${n} saved run${n === 1 ? '' : 's'} on this device. <button id="clearHistory" type="button" class="link">Clear</button>`
+    : 'Finish a run here, or tap "I ran this", and it counts as ground you know.';
+  const c = document.getElementById('clearHistory');
+  if (c) c.onclick = () => { store.set(UI.storageKeys.history, '[]'); showHistory(); };
 }
 
 // ---------- how-to popup ----------
@@ -143,7 +164,7 @@ $('planBtn').onclick = async () => {
     status(`Building ${CONFIG.plan.seeds} loops and scoring them…`);
     $('planBtn').disabled = true;
     const res = await plan({
-      start: state.start, prefs: f.prefs, key,
+      start: state.start, prefs: f.prefs, key, history: loadHistory(),
       ...(f.by === 'distance' ? { distanceMi: f.distanceMi } : { durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile }),
     });
     state.notes = res.notes;
@@ -274,7 +295,15 @@ $('finishBtn').onclick = () => {
   tick();
   document.body.classList.remove('running');
   document.body.classList.add('done');
-  status('Run saved below. Export it as GPX if you want to keep it.');
+  const ran = runSegments(state.track).flat();
+  if (state.track.distance >= UI.minSavedRunM) saveRun(ran); // remembered for "somewhere new"
+  status('Run saved on this device. Export it as GPX if you want a file.');
+};
+
+$('ranBtn').onclick = () => {
+  if (!state.chosen) return;
+  saveRun(state.chosen.route.coords);
+  status('Saved as run: "somewhere new" will now count this route as ground you know.');
 };
 
 $('saveRunBtn').onclick = () => {
@@ -287,3 +316,4 @@ $('saveRunBtn').onclick = () => {
 $('newBtn').onclick = () => { document.body.classList.remove('done'); state.track = null; if (state.candidates.length) drawCandidates(state.candidates.indexOf(state.chosen)); };
 
 restoreForm();
+showHistory();
