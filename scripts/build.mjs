@@ -2,10 +2,38 @@
 // Inline src/core.mjs + src/app.mjs into src/index.html -> dist/index.html (one self-contained page for Pages and
 // for the day snapshot). dist/ is generated: never commit it.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const BUILD = { template: 'src/index.html', modules: ['src/core.mjs', 'src/app.mjs'], out: 'dist/index.html', marker: '/*@APP@*/' };
+export const BUILD = {
+  template: 'src/index.html', modules: ['src/core.mjs', 'src/app.mjs'], out: 'dist/index.html', marker: '/*@APP@*/',
+  // Third-party code is inlined so the page loads nothing from other hosts (the public sites' publish check requires
+  // it). Each file is verified against the hash of the published npm release before it goes in.
+  vendor: [
+    { marker: '/*@LEAFLET_CSS@*/', file: 'vendor/leaflet-1.9.4/leaflet.css', sha384: 'sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H',
+      license: 'vendor/leaflet-1.9.4/LICENSE' }, // full BSD-2-Clause text goes in front, as the license requires
+    { marker: '/*@LEAFLET_JS@*/', file: 'vendor/leaflet-1.9.4/leaflet.js', sha384: 'cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH',
+      license: 'vendor/leaflet-1.9.4/LICENSE' },
+  ],
+};
+
+export function sha384(buf) {
+  return createHash('sha384').update(buf).digest('base64');
+}
+
+export function inlineVendor(html, root, vendor) {
+  for (const v of vendor) {
+    const buf = readFileSync(join(root, v.file));
+    if (sha384(buf) !== v.sha384) throw new Error(`${v.file} does not match its pinned hash`);
+    const text = buf.toString('utf8');
+    if (/<\/(script|style)/i.test(text)) throw new Error(`${v.file} would close its tag early`);
+    if (!html.includes(v.marker)) throw new Error(`template is missing ${v.marker}`);
+    const notice = v.license ? `/*! ${readFileSync(join(root, v.license), 'utf8').replace(/\*\//g, '* /').trim()}\n*/\n` : '';
+    html = html.replace(v.marker, () => notice + text);
+  }
+  return html;
+}
 
 export function inlineModules(sources) {
   return sources
@@ -19,7 +47,7 @@ export function build(root, cfg = BUILD) {
   const tpl = readFileSync(join(root, cfg.template), 'utf8');
   if (!tpl.includes(cfg.marker)) throw new Error(`template is missing ${cfg.marker}`);
   const js = inlineModules(cfg.modules.map((m) => readFileSync(join(root, m), 'utf8')));
-  const html = tpl.replace(cfg.marker, () => js);
+  const html = inlineVendor(tpl.replace(cfg.marker, () => js), root, cfg.vendor ?? []);
   const out = join(root, cfg.out);
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, html);

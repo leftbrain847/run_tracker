@@ -5,14 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f172a">
 <title>Run Tracker</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+<style>/*@LEAFLET_CSS@*/</style>
+<script>/*@LEAFLET_JS@*/</script>
 <style>
   :root { --bg:#0f172a; --panel:#111c33; --ink:#e2e8f0; --mute:#94a3b8; --accent:#2563eb; --run:#dc2626; --ok:#16a34a; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
     font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  #map { height: 42vh; width: 100%; }
+  #map { height: 42vh; width: 100%; background: #0b1222; }
+  #map:not(.live)::after { content: "Map appears once you set a start"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute); font-size: 14px; z-index: 500; pointer-events: none; }
   main { padding: 12px 14px calc(90px + env(safe-area-inset-bottom)); }
   h1 { font-size: 20px; margin: 4px 0 10px; }
   fieldset { border: 1px solid #1e293b; border-radius: 10px; margin: 0 0 10px; padding: 8px 10px; }
@@ -32,6 +33,7 @@
   details a { color: #93c5fd; }
   .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); display: flex; gap: 8px; z-index: 1000; }
   .bar button { flex: 1; }
+  .bar[hidden] { display: none !important; }
   #runBar .go { background: var(--ok); font-weight: 600; }
   #live { display: none; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); text-align: center; margin: 8px 0; }
