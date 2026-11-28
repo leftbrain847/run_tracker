@@ -111,3 +111,27 @@ test('build output parses as a JS module', async () => {
   writeFileSync(file, js);
   execFileSync(process.execPath, ['--check', file]); // throws on a syntax error
 });
+
+test('live/<Project>.html matches the current build (run `npm run live` after changing src/)', async () => {
+  const { livePage } = await import('../scripts/live.mjs');
+  const { readFileSync, existsSync } = await import('node:fs');
+  const tmp = mkdtempSync(join(tmpdir(), 'rt-'));
+  for (const d of ['src', 'vendor']) cpSync(join(ROOT, d), join(tmp, d), { recursive: true });
+  cpSync(join(ROOT, 'sprint.config.json'), join(tmp, 'sprint.config.json'));
+  const want = livePage(tmp);
+  const { basename } = await import('node:path');
+  const file = join(ROOT, 'live', basename(want.path));
+  assert.ok(existsSync(file), `${file} is missing`);
+  assert.equal(readFileSync(file, 'utf8'), want.html, 'live page is stale: run npm run live');
+  assert.match(want.html, /<meta name="sprint-public" content="yes">/);
+});
+
+test('how-to popup: links to the HeiGIT account site, opens when there is no key', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rt-'));
+  for (const d of ['src', 'vendor']) cpSync(join(ROOT, d), join(tmp, d), { recursive: true });
+  const { html } = build(tmp);
+  assert.match(html, /<dialog id="howto"/);
+  assert.match(html, /href="https:\/\/account\.heigit\.org\/"/);
+  assert.ok(!html.includes('openrouteservice.org/dev'), 'no retired signup link');
+  assert.match(html, /if \(!key\) \{ openHowto\(\);/);
+});

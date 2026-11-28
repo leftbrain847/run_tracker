@@ -67,6 +67,17 @@ function restoreForm() {
   $('durationOut').textContent = `${$('duration').value} min`;
 }
 
+// ---------- how-to popup ----------
+function openHowto() {
+  const d = $('howto');
+  if (d.open) return;
+  try { d.showModal(); } catch { d.setAttribute('open', ''); } // old browsers: plain open
+}
+$('howtoBtn').onclick = openHowto;
+$('howtoClose').onclick = () => { $('howto').close?.(); $('howto').removeAttribute('open'); afterHowto(); };
+$('howto').addEventListener('close', afterHowto); // Escape closes it too
+function afterHowto() { $('setup').open = true; $('orsKey').focus(); }
+
 const status = (msg, isErr = false) => { $('status').textContent = msg; $('status').className = isErr ? 'err' : ''; };
 
 function locate() {
@@ -94,7 +105,7 @@ $('planBtn').onclick = async () => {
   const f = readForm();
   store.set(UI.storageKeys.form, JSON.stringify(f));
   try {
-    if (!key) throw new Error('add your free openrouteservice key (Setup)');
+    if (!key) { openHowto(); throw new Error('add your free openrouteservice key (Setup)'); }
     if (f.zip) {
       status('Looking up zip…');
       let r;

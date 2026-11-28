@@ -22,6 +22,7 @@ npm test
 ## Deployed
 - Live: https://leftbrain847.github.io/run_tracker/
 - Day snapshot: `2026-11-26 - Run Tracker` (frozen; never edited)
+- Living version: `live/Run Tracker.html`, paired with the day build on the index. Regenerate with `npm run live` after changing `src/` (a test fails if it falls behind).
 
 ## Ship a sprint day
 Set `project` in `sprint.config.json`, then freeze the day's page:
