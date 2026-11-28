@@ -768,6 +768,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   body.running #liveBar { display: flex; }
   body.done #doneBar { display: flex; }
   #finishBtn { background: var(--run); font-weight: 600; }
+  .seg { display: flex; background: #0b1222; border: 1px solid #334155; border-radius: 10px; padding: 3px; margin: 2px 0 8px; }
+  .seg label { flex: 1; margin: 0; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg span { display: block; width: 100%; text-align: center; padding: 10px 6px; border-radius: 8px; color: var(--mute); }
+  .seg input:checked + span { background: var(--accent); color: #fff; font-weight: 600; }
+  .seg input:focus-visible + span { outline: 2px solid #93c5fd; }
+  [hidden] { display: none !important; }
   button.link { background: none; padding: 10px 0; color: #93c5fd; text-decoration: underline; min-height: 44px; }
   dialog { background: var(--panel); color: var(--ink); border: 1px solid #334155; border-radius: 14px; padding: 16px 18px; max-width: 30rem; width: calc(100% - 28px); }
   dialog:not([open]) { display: none; }
@@ -797,10 +804,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       </div>
     </fieldset>
     <fieldset>
-      <legend>Duration · pace</legend>
-      <input id="duration" type="range" min="10" max="180" step="5" value="40">
-      <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
-        <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+      <legend>How far</legend>
+      <div class="seg" role="radiogroup" aria-label="Plan by">
+        <label><input type="radio" name="by" value="time" checked><span>Time</span></label>
+        <label><input type="radio" name="by" value="distance"><span>Distance</span></label>
+      </div>
+      <div id="byTime">
+        <input id="duration" type="range" min="10" max="180" step="5" value="40" aria-label="Duration">
+        <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
+          <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+      </div>
+      <div id="byDistance" hidden>
+        <input id="distance" type="range" min="0.5" max="20" step="0.25" value="4" aria-label="Distance">
+        <div class="row"><b id="distanceOut">4.00 mi</b></div>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Route</legend>
+      <div class="seg" role="radiogroup" aria-label="Route type">
+        <label><input type="radio" name="shape" value="loop" checked><span>Loop</span></label>
+        <label><input type="radio" name="shape" value="outback"><span>Out &amp; back</span></label>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Surface</legend>
@@ -815,6 +839,30 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
       <label><input type="radio" name="terrain" value="flat"> flat</label>
       <label><input type="checkbox" id="endDownhill"> end downhill</label>
     </fieldset>
+    <fieldset>
+      <legend>Prefer</legend>
+      <label><input type="checkbox" id="quiet"> quiet streets (avoid main roads)</label>
+      <label><input type="checkbox" id="green"> green / shady</label>
+      <label><input type="checkbox" id="somewhereNew"> somewhere new</label>
+      <p class="small" id="historyLine"></p>
+    </fieldset>
+    <details id="viaBox">
+      <summary>Go via a spot (optional)</summary>
+      <div class="row">
+        <input id="viaText" type="text" placeholder="park, landmark, address" style="flex:1;min-width:10em">
+        <button id="viaFind" type="button">Find</button>
+        <button id="viaTap" type="button">Tap map</button>
+      </div>
+      <p class="small" id="viaLine">Loops pass through it; out-and-backs run through it and turn further on.</p>
+    </details>
+    <details id="eleBox">
+      <summary>Elevation limits (optional)</summary>
+      <div class="row">
+        <label>min <input id="minEle" type="number" inputmode="numeric" step="10" placeholder="none" style="width:6em"> ft</label>
+        <label>max <input id="maxEle" type="number" inputmode="numeric" step="10" placeholder="none" style="width:6em"> ft</label>
+      </div>
+      <p class="small">Routes that go below the min or above the max are skipped. Openrouteservice can't steer by elevation, so tight limits in hilly areas may leave only the closest matches.</p>
+    </details>
     <button id="planBtn" class="primary" type="button">Plan my run</button>
     <div id="status"></div>
     <div id="results"></div>
@@ -846,6 +894,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 <div id="runBar" class="bar" hidden>
   <button id="gpxBtn" type="button">GPX for watch</button>
+  <button id="ranBtn" type="button" title="Ran it with your watch? Save it so 'somewhere new' knows">I ran this</button>
   <button id="startBtn" class="go" type="button">Run it</button>
 </div>
 <div id="liveBar" class="bar">
@@ -867,7 +916,8 @@ const CONFIG = {
     routingBase: 'https://api.heigit.org/openrouteservice',
     geocodeBase: 'https://api.heigit.org/pelias/v1',
     profiles: { road: 'foot-walking', trail: 'foot-hiking', either: 'foot-walking' },
-    extraInfo: ['surface', 'waytype'],
+    extraInfo: ['surface', 'waytype', 'green', 'noise'], // green/noise exist for foot profiles only (all of ours)
+    weightingFactor: { green: 1, quiet: 1 }, // ORS profile_params.weightings: 0 = normal routing, 1 = strongest
     country: 'US',
   },
   plan: {
@@ -878,7 +928,15 @@ const CONFIG = {
     distanceTolerance: 0.15, // drop candidates more than 15% off target length
     results: 3,            // candidates shown
     finishFraction: 0.2,   // "end downhill" looks at the last 20% of the route
+    outBackDetour: 1.3,    // out-and-back: road distance / straight-line distance to the turnaround, before calibration
+    viaLoopAngles: [45, -45, 90, -90, 135, -135], // via loops: third corner's angle off the start->via line, batch 1
+    viaOutBackSpread: [0, 25, -25, 50, -50, 75],  // via out-and-backs: turn bearing beyond the via spot, batch 1
+    elevationToleranceFt: 0, // how far past a min/max elevation limit still counts as inside
   },
+  distance: { minMi: 0.5, maxMi: 30 },
+  mainRoadWaytypes: [1, 2], // ORS waytype IDs: 1 State Road, 2 Road (3 Street, 4 Path, 5 Track, 6 Cycleway, 7 Footway)
+  repeat: { cellM: 20, nearM: 18, minApartM: 150 },
+  history: { stepM: 25, nearM: 30, maxRuns: 100, decimals: 5 }, // ~13 KB a run: 100 runs stays well under Safari's storage // "somewhere new": past runs kept on this device only // a point "repeats" if within nearM of route >= minApartM away along it
   pace: { defaultMinPerMile: 10, metersPerMile: 1609.344, feetPerMeter: 3.28084 },
   // Surface IDs from the ORS docs; 9 and 16 are retired there but kept so old data still scores.
   unpavedSurfaces: [2, 8, 9, 10, 11, 12, 15, 16, 17],
@@ -888,6 +946,11 @@ const CONFIG = {
     surface: 30,       // per 100% matching surface share
     hills: 2,          // per m of climb per km
     finishDrop: 1.5,   // per m of drop over the finish section
+    mainRoad: 40,      // per 100% on main roads (when "quiet streets" is on)
+    noise: 2,          // per point of average noise 0-10 (when "quiet streets" is on)
+    green: 3,          // per point of average greenness 0-10 (when "prefer green" is on)
+    repeats: 25,       // per 100% doubled back (loops only: a goal, not a rule)
+    novelty: 30,       // per 100% new ground (when "somewhere new" is on)
   },
   track: {
     maxAccuracyM: 35,  // ignore GPS fixes worse than this
@@ -903,7 +966,15 @@ const CONFIG = {
 // service outage, since the gateway's error replies don't carry CORS headers.
 const NETWORK_ERROR = "Couldn't reach the routing service. Check your key in Setup (copy it again from account.heigit.org), then try again.";
 
-const PREF_DEFAULTS = { surface: 'either', terrain: 'any', endDownhill: false };
+const PREF_DEFAULTS = {
+  surface: 'either', terrain: 'any', endDownhill: false,
+  shape: 'loop',        // 'loop' | 'outback'
+  quiet: false,         // prefer quiet ways, avoid main roads
+  green: false,         // prefer green (shaded-ish) ways; true shade has no data on the public ORS
+  minEleFt: null, maxEleFt: null, // optional elevation limits (feet)
+  somewhereNew: false,  // prefer ground you haven't run (needs saved runs)
+  via: null,            // { lat, lon, label }: a spot the route must pass
+};
 
 // Geolocation error code -> what to tell the runner (codes from the W3C Geolocation API).
 const LOCATION_ERRORS = {
@@ -952,23 +1023,88 @@ function targetMeters(durationMin, paceMinPerMile = CONFIG.pace.defaultMinPerMil
   return (durationMin / paceMinPerMile) * CONFIG.pace.metersPerMile;
 }
 
+function distanceMeters(miles, cfg = CONFIG) {
+  if (!(miles >= cfg.distance.minMi && miles <= cfg.distance.maxMi)) throw new Error(`distance must be ${cfg.distance.minMi}-${cfg.distance.maxMi} mi`);
+  return miles * cfg.pace.metersPerMile;
+}
+
+// Point `meters` away from p on a compass bearing (degrees).
+function destination(p, meters, bearingDeg) {
+  const d = meters / R, b = rad(bearingDeg), la = rad(p.lat), lo = rad(p.lon);
+  const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+  const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+  return { lat: (la2 * 180) / Math.PI, lon: ((((lo2 * 180) / Math.PI) + 540) % 360) - 180 };
+}
+
+function bearing(a, b) {
+  const la1 = rad(a.lat), la2 = rad(b.lat), dl = rad(b.lon - a.lon);
+  const y = Math.sin(dl) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dl);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+const straight = (a, b) => haversine([a.lat, a.lon], [b.lat, b.lon]);
+
+// Via loops: start -> via -> corner -> start. For each angle off the start->via line, put the corner where the
+// triangle's straight-line perimeter is length/detour: r = (c^2 - a^2) / (2(c - a cos phi)), c = L - a, a = |start-via|.
+function viaLoopCorners(start, via, length, n, batch = 0, cfg = CONFIG) {
+  const a = straight(start, via), L = length / cfg.plan.outBackDetour, c = L - a;
+  if (c <= a) throw new Error(`the via spot is ${(a / cfg.pace.metersPerMile).toFixed(1)} mi away: too far for a loop this long. Go longer, or pick a closer spot.`);
+  const b0 = bearing(start, via);
+  const angles = cfg.plan.viaLoopAngles.map((t) => t + batch * 22.5).slice(0, n);
+  return angles.map((phi) => {
+    const r = (c * c - a * a) / (2 * (c - a * Math.cos(rad(phi))));
+    return destination(start, r, b0 + phi);
+  });
+}
+
+// Via out-and-backs: run through the via spot and turn further on, so the whole thing is `length`.
+function viaTurns(start, via, length, n, batch = 0, cfg = CONFIG) {
+  const a = straight(start, via), R = length / 2 / cfg.plan.outBackDetour;
+  if (R <= a) throw new Error(`the via spot is ${(a / cfg.pace.metersPerMile).toFixed(1)} mi away: an out-and-back through it is longer than your target. Go longer, or pick a closer spot.`);
+  const b0 = bearing(start, via);
+  return cfg.plan.viaOutBackSpread.slice(0, n).map((d) => destination(via, R - a, b0 + d + batch * 12.5));
+}
+
+// Out-and-back turnarounds: n bearings spread round the compass, offset per batch so batch 2 tries new directions.
+function turnarounds(start, meters, n, batch = 0, cfg = CONFIG) {
+  const r = meters / 2 / cfg.plan.outBackDetour;
+  return Array.from({ length: n }, (_, i) => destination(start, r, (i * 360) / n + (batch * 180) / n));
+}
+
 // ---------- ORS requests ----------
-function directionsRequest(start, meters, prefs, seed, cfg = CONFIG) {
+// ORS docs show weightings two ways ({ green: { factor: 1 } } in examples, green: 1 in the reference table), so the
+// planner tries 'object', then 'number', then none (weightings = false) if a whole batch is refused.
+const WEIGHTING_FORMS = ['object', 'number'];
+function routeOptions(prefs, cfg, weightings = 'object') {
+  const o = {};
+  if (weightings && (prefs.quiet || prefs.green)) {
+    const val = (f) => (weightings === 'number' ? f : { factor: f });
+    const w = {};
+    if (prefs.green) w.green = val(cfg.ors.weightingFactor.green);
+    if (prefs.quiet) w.quiet = val(cfg.ors.weightingFactor.quiet);
+    o.profile_params = { weightings: w };
+  }
+  return o;
+}
+
+// One ORS request. Plain loop: a round trip from `start`. Otherwise start -> each waypoint in order (an
+// out-and-back's turnaround, or a via loop's via -> corner -> start).
+function directionsRequest(start, meters, prefs, seed, cfg = CONFIG, { turn = null, waypoints = null, weightings = 'object' } = {}) {
   const profile = cfg.ors.profiles[prefs.surface] ?? cfg.ors.profiles.either;
+  const options = routeOptions(prefs, cfg, weightings);
+  const coordinates = [[start.lon, start.lat]];
+  const stops = waypoints ?? (turn ? [turn] : null);
+  if (stops) for (const p of stops) coordinates.push([p.lon, p.lat]);
+  else options.round_trip = { length: Math.round(meters), points: cfg.plan.loopPoints, seed };
   return {
     url: `${cfg.ors.routingBase}/v2/directions/${profile}/geojson`,
-    body: {
-      coordinates: [[start.lon, start.lat]],
-      elevation: true,
-      instructions: false,
-      extra_info: cfg.ors.extraInfo,
-      options: { round_trip: { length: Math.round(meters), points: cfg.plan.loopPoints, seed } },
-    },
+    body: { coordinates, elevation: true, instructions: false, extra_info: cfg.ors.extraInfo, options },
   };
 }
 
-function geocodeUrl(text, key, cfg = CONFIG) {
+function geocodeUrl(text, key, cfg = CONFIG, near = null) {
   const q = new URLSearchParams({ api_key: key, text, size: '1', 'boundary.country': cfg.ors.country });
+  if (near) { q.set('focus.point.lat', String(near.lat)); q.set('focus.point.lon', String(near.lon)); } // nearest match first
   return `${cfg.ors.geocodeBase}/search?${q}`;
 }
 
@@ -980,35 +1116,94 @@ function parseGeocode(json) {
 }
 
 // ORS geojson -> route object. Coordinates come back [lon, lat, ele]; we store [lat, lon, ele].
+// extras: { surface, waytype, green, noise } as [fromIndex, toIndex, value] runs, whichever ORS returned.
 function parseRoute(json, seed = 0) {
   const f = json?.features?.[0];
   if (!f?.geometry?.coordinates?.length) throw new Error('no route in response');
   const coords = f.geometry.coordinates.map(([lon, lat, ele]) => [lat, lon, ele ?? 0]);
-  const surfaces = f.properties?.extras?.surface?.values ?? [];
-  return { seed, coords, surfaces, reversed: false };
+  const extras = {};
+  for (const [k, v] of Object.entries(f.properties?.extras ?? {})) if (Array.isArray(v?.values)) extras[k] = v.values;
+  return { seed, coords, extras, reversed: false, shape: 'loop' };
 }
+
+const remapExtras = (extras, fn) => Object.fromEntries(Object.entries(extras).map(([k, runs]) => [k, fn(runs)]));
 
 function reverseRoute(route) {
   const n = route.coords.length - 1;
   return {
     ...route,
     coords: [...route.coords].reverse(),
-    surfaces: route.surfaces.map(([a, b, v]) => [n - b, n - a, v]).reverse(),
+    extras: remapExtras(route.extras, (runs) => runs.map(([a, b, v]) => [n - b, n - a, v]).reverse()),
     reversed: !route.reversed,
   };
 }
 
+// Out-and-back from a one-way route: the same path, then back along it.
+function outAndBack(route) {
+  const n = route.coords.length - 1;
+  const back = reverseRoute(route);
+  return {
+    ...route,
+    shape: 'outback',
+    turnIndex: n,
+    coords: route.coords.concat(back.coords.slice(1)),
+    extras: Object.fromEntries(Object.keys(route.extras).map((k) => [k, route.extras[k].concat(back.extras[k].map(([a, b, v]) => [a + n, b + n, v]))])),
+  };
+}
+
 // ---------- metrics ----------
+// Distance-weighted share of an extra whose value passes `test` (0-1), or null if ORS didn't return that extra.
+function extraShare(route, key, test, cum = cumulative(route.coords)) {
+  const runs = route.extras?.[key];
+  if (!runs?.length) return null;
+  const total = cum[cum.length - 1] || 1;
+  let hit = 0;
+  for (const [a, b, v] of runs) if (test(v)) hit += (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
+  return hit / total;
+}
+
+// Distance-weighted average of a 0-10 extra (green, noise), or null if missing.
+function extraAverage(route, key, cum = cumulative(route.coords)) {
+  const runs = route.extras?.[key];
+  if (!runs?.length) return null;
+  let sum = 0, len = 0;
+  for (const [a, b, v] of runs) {
+    const l = (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
+    sum += v * l; len += l;
+  }
+  return len ? sum / len : null;
+}
+
 function surfaceShares(route, cfg = CONFIG) {
   const cum = cumulative(route.coords);
+  return {
+    unpaved: extraShare(route, 'surface', (v) => cfg.unpavedSurfaces.includes(v), cum) ?? 0,
+    paved: extraShare(route, 'surface', (v) => cfg.pavedSurfaces.includes(v), cum) ?? 0,
+  };
+}
+
+// Share of the route's distance that passes within nearM of another part of itself (doubling back), 0-1.
+function repeatShare(coords, cfg = CONFIG) {
+  const { cellM, nearM, minApartM } = cfg.repeat;
+  if (coords.length < 3) return 0;
+  const cum = cumulative(coords);
   const total = cum[cum.length - 1] || 1;
-  let unpaved = 0, paved = 0;
-  for (const [a, b, v] of route.surfaces) {
-    const len = (cum[Math.min(b, cum.length - 1)] ?? 0) - (cum[a] ?? 0);
-    if (cfg.unpavedSurfaces.includes(v)) unpaved += len;
-    else if (cfg.pavedSurfaces.includes(v)) paved += len;
+  const latM = 111320, lonM = 111320 * Math.cos(rad(coords[0][0]));
+  const cell = (p) => [Math.floor((p[0] * latM) / cellM), Math.floor((p[1] * lonM) / cellM)];
+  const grid = new Map();
+  coords.forEach((p, i) => { const k = cell(p).join(','); (grid.get(k) ?? grid.set(k, []).get(k)).push(i); });
+  let rep = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [cy, cx] = cell(coords[i]);
+    let hit = false;
+    for (let dy = -1; dy <= 1 && !hit; dy++) for (let dx = -1; dx <= 1 && !hit; dx++) {
+      for (const j of grid.get(`${cy + dy},${cx + dx}`) ?? []) {
+        if (Math.abs(cum[i] - cum[j]) >= minApartM && haversine(coords[i], coords[j]) <= nearM) { hit = true; break; }
+      }
+    }
+    if (hit) rep += cum[i] - cum[i - 1];
   }
-  return { unpaved: unpaved / total, paved: paved / total };
+  return rep / total;
 }
 
 // Elevation lost over the last `fraction` of the route (positive = finishes downhill).
@@ -1022,11 +1217,86 @@ function finishDrop(coords, fraction = CONFIG.plan.finishFraction) {
   return (coords[i][2] ?? 0) - (coords[coords.length - 1][2] ?? 0);
 }
 
-function metrics(route, cfg = CONFIG) {
-  const distance = pathLength(route.coords);
+function metrics(route, cfg = CONFIG, { history = null } = {}) {
+  const cum = cumulative(route.coords);
+  const distance = cum[cum.length - 1] ?? 0;
   const { ascent, descent } = climb(route.coords);
   const { unpaved, paved } = surfaceShares(route, cfg);
-  return { distance, ascent, descent, unpaved, paved, finishDrop: finishDrop(route.coords, cfg.plan.finishFraction) };
+  const eles = route.coords.map((c) => c[2] ?? 0);
+  return {
+    distance, ascent, descent, unpaved, paved,
+    finishDrop: finishDrop(route.coords, cfg.plan.finishFraction),
+    mainRoad: extraShare(route, 'waytype', (v) => cfg.mainRoadWaytypes.includes(v), cum),
+    green: extraAverage(route, 'green', cum),
+    noise: extraAverage(route, 'noise', cum),
+    minEle: Math.min(...eles), maxEle: Math.max(...eles),
+    repeats: route.shape === 'outback' ? 0 : repeatShare(route.coords, cfg),
+    novelty: history ? noveltyShare(route.coords, history) : null,
+  };
+}
+
+// ---------- somewhere new ----------
+// Points every stepM along a path, rounded: what a saved run keeps (small enough for browser storage).
+function downsample(coords, cfg = CONFIG) {
+  const { stepM, decimals } = cfg.history;
+  const out = [];
+  let since = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    if (i) since += haversine(coords[i - 1], coords[i]);
+    if (since >= stepM || i === coords.length - 1) {
+      out.push([+coords[i][0].toFixed(decimals), +coords[i][1].toFixed(decimals)]);
+      since = 0;
+    }
+  }
+  return out;
+}
+
+// Add a run (newest first), keeping at most maxRuns. Pure: returns a new list.
+function addRun(history, coords, date, cfg = CONFIG) {
+  const pts = downsample(coords, cfg);
+  if (pts.length < 2) return history;
+  return [{ date, pts }, ...(history ?? [])].slice(0, cfg.history.maxRuns);
+}
+
+// Grid of every saved point, for fast "have I been near here?" checks.
+function historyIndex(history, cfg = CONFIG) {
+  const runs = history ?? [];
+  if (!runs.length) return null;
+  const lat0 = runs[0].pts[0][0];
+  const cellM = cfg.history.nearM;
+  const latM = 111320, lonM = 111320 * Math.cos(rad(lat0));
+  const cell = (p) => [Math.floor((p[0] * latM) / cellM), Math.floor((p[1] * lonM) / cellM)];
+  const grid = new Map();
+  for (const r of runs) for (const p of r.pts) { const k = cell(p).join(','); (grid.get(k) ?? grid.set(k, []).get(k)).push(p); }
+  return { grid, cell, nearM: cfg.history.nearM };
+}
+
+// Share of a route's distance (0-1) more than nearM from any saved run. Saved points are stepM apart, so the
+// threshold covers the gap between them.
+function noveltyShare(coords, index) {
+  if (!index || coords.length < 2) return null;
+  const known = (p) => {
+    const [cy, cx] = index.cell(p);
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      for (const q of index.grid.get(`${cy + dy},${cx + dx}`) ?? []) if (haversine(p, q) <= index.nearM) return true;
+    }
+    return false;
+  };
+  let fresh = 0, total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const d = haversine(coords[i - 1], coords[i]);
+    total += d;
+    if (!known(coords[i])) fresh += d;
+  }
+  return total ? fresh / total : null;
+}
+
+// Inside the optional elevation limits (feet)?
+function withinElevation(m, prefs, cfg = CONFIG) {
+  const ft = cfg.pace.feetPerMeter, tol = cfg.plan.elevationToleranceFt;
+  if (prefs.minEleFt != null && m.minEle * ft < prefs.minEleFt - tol) return false;
+  if (prefs.maxEleFt != null && m.maxEle * ft > prefs.maxEleFt + tol) return false;
+  return true;
 }
 
 // ---------- scoring ----------
@@ -1044,14 +1314,22 @@ function score(m, prefs, target, cfg = CONFIG) {
   if (prefs.terrain === 'hilly') { s += perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
   if (prefs.terrain === 'flat') { s -= perKm * w.hills; reasons.push(`${Math.round(ftPerMi)} ft climb/mi`); }
   if (prefs.endDownhill) { s += m.finishDrop * w.finishDrop; reasons.push(`finish ${m.finishDrop >= 0 ? 'drops' : 'climbs'} ${Math.abs(Math.round(m.finishDrop * ft))} ft`); }
+  if (prefs.quiet) {
+    if (m.mainRoad != null) { s -= m.mainRoad * w.mainRoad; reasons.push(`${Math.round(m.mainRoad * 100)}% main road`); }
+    if (m.noise != null) s -= m.noise * w.noise;
+  }
+  if (prefs.green && m.green != null) { s += m.green * w.green; reasons.push(`green ${m.green.toFixed(1)}/10`); }
+  if (prefs.somewhereNew && m.novelty != null) { s += m.novelty * w.novelty; reasons.push(`${Math.round(m.novelty * 100)}% new to you`); }
+  if (m.repeats > 0) { s -= m.repeats * w.repeats; if (m.repeats >= 0.05) reasons.push(`${Math.round(m.repeats * 100)}% doubles back`); }
+  if (prefs.minEleFt != null || prefs.maxEleFt != null) reasons.push(`${Math.round(m.minEle * ft)}-${Math.round(m.maxEle * ft)} ft elev`);
   return { score: s, reasons };
 }
 
 // Each loop is tried both ways round; keep the better direction, drop off-length loops, rank.
-function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false } = {}) {
+function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false, history = null } = {}) {
   const best = routes.map((r) => {
     const opts = [r, reverseRoute(r)].map((x) => {
-      const m = metrics(x, cfg);
+      const m = metrics(x, cfg, { history });
       return { route: x, metrics: m, ...score(m, prefs, target, cfg) };
     });
     return opts[0].score >= opts[1].score ? opts[0] : opts[1];
@@ -1059,9 +1337,13 @@ function rankCandidates(routes, prefs, target, cfg = CONFIG, { fallback = false 
   // Different seeds can return the same loop: dedupe on length + climb + midpoint, keeping the best-scoring copy.
   const seen = new Set();
   const off = (c) => Math.abs(c.metrics.distance - target) / target;
-  let pool = best.filter((c) => off(c) <= cfg.plan.distanceTolerance);
-  // Nothing close enough: show the closest few, flagged, rather than nothing.
-  if (!pool.length && fallback) pool = [...best].sort((a, b) => off(a) - off(b)).slice(0, cfg.plan.results).map((c) => ({ ...c, offTarget: true }));
+  const fitsElevation = (c) => withinElevation(c.metrics, prefs, cfg);
+  let pool = best.filter((c) => off(c) <= cfg.plan.distanceTolerance && fitsElevation(c));
+  // Nothing fits: show the closest few, flagged, rather than nothing (elevation-fitting ones first).
+  if (!pool.length && fallback) {
+    pool = [...best].sort((a, b) => (fitsElevation(b) - fitsElevation(a)) || (off(a) - off(b))).slice(0, cfg.plan.results)
+      .map((c) => ({ ...c, offTarget: true, offWhy: [off(c) > cfg.plan.distanceTolerance && 'length', !fitsElevation(c) && 'elevation'].filter(Boolean) }));
+  }
   return pool
     .sort((a, b) => b.score - a.score)
     .filter((c) => {
@@ -1083,30 +1365,64 @@ function lengthRatio(routes, requested) {
   return r.length % 2 ? r[m] : (r[m - 1] + r[m]) / 2;
 }
 
-async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds }) {
-  const results = await Promise.allSettled(seeds.map(async (seed) => {
-    const req = directionsRequest(start, length, prefs, seed, cfg);
-    let res;
-    try { res = await fetchFn(req.url, {
+async function fetchOne(req, key, fetchFn) {
+  let res;
+  try {
+    res = await fetchFn(req.url, {
       method: 'POST',
       headers: { Authorization: key, 'Content-Type': 'application/json', Accept: 'application/geo+json' },
       body: JSON.stringify(req.body),
-    }); } catch { throw new Error(NETWORK_ERROR); }
-    if (!res.ok) throw new Error(`routing failed (${res.status})`);
-    return parseRoute(await res.json(), seed);
+    });
+  } catch { throw new Error(NETWORK_ERROR); }
+  if (!res.ok) { const e = new Error(`routing failed (${res.status})`); e.status = res.status; throw e; }
+  return res.json();
+}
+
+// One batch of candidates: loops (one round trip per seed) or out-and-backs (one turnaround per direction).
+// Waypoints per candidate (null = plain round trip), and whether the fetched path is the out leg of an out-and-back.
+function candidateStops(start, length, prefs, n, batch, cfg = CONFIG) {
+  const out = prefs.shape === 'outback';
+  const v = prefs.via;
+  if (v && out) return { out, stops: viaTurns(start, v, length, n, batch, cfg).map((t) => [v, t]) };
+  if (v) return { out, stops: viaLoopCorners(start, v, length, n, batch, cfg).map((c) => [v, c, start]) };
+  if (out) return { out, stops: turnarounds(start, length, n, batch, cfg).map((t) => [t]) };
+  return { out, stops: Array(n).fill(null) };
+}
+
+async function fetchBatch({ start, length, prefs, key, fetchFn, cfg, seeds, batch, weightings }) {
+  const { out, stops } = candidateStops(start, length, prefs, seeds.length, batch, cfg);
+  const results = await Promise.allSettled(seeds.map(async (seed, i) => {
+    const req = directionsRequest(start, length, prefs, seed, cfg, { waypoints: stops[i], weightings });
+    const r = parseRoute(await fetchOne(req, key, fetchFn), seed);
+    return out ? outAndBack(r) : r;
   }));
+  const rejected = results.filter((r) => r.status === 'rejected').map((r) => r.reason);
   return {
     routes: results.filter((r) => r.status === 'fulfilled').map((r) => r.value),
-    error: results.find((r) => r.status === 'rejected')?.reason?.message,
+    error: rejected[0]?.message,
+    badRequest: rejected.length === results.length && rejected.every((e) => e.status === 400),
   };
 }
 
-// End to end: start + duration + prefs -> ranked loops. fetchFn is injected so tests can run offline.
-async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG }) {
+// End to end: start + target + prefs -> ranked routes. fetchFn is injected so tests can run offline.
+// Target: durationMin + paceMinPerMile, or distanceMi.
+async function plan({ start, durationMin, paceMinPerMile, distanceMi = null, prefs = PREF_DEFAULTS, key, fetchFn = fetch, cfg = CONFIG, history = null }) {
   if (!key) throw new Error('add your free openrouteservice key first');
-  const target = targetMeters(durationMin, paceMinPerMile);
+  prefs = { ...PREF_DEFAULTS, ...prefs };
+  const target = distanceMi != null ? distanceMeters(distanceMi, cfg) : targetMeters(durationMin, paceMinPerMile);
   const n = cfg.plan.seeds;
-  const first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => i + 1) });
+  const seedsFor = (b) => Array.from({ length: n }, (_, i) => b * n + i + 1);
+  const weighted = prefs.quiet || prefs.green;
+  const forms = weighted ? [...WEIGHTING_FORMS, false] : [false];
+  let weightings, first;
+  const notes = [];
+  // If ORS refuses a weightings form (every request 400), try the next; with none it still scores road type and
+  // greenness. A batch with no weightings that is still all-400 is a different problem: stop and report it.
+  for (weightings of forms) {
+    first = await fetchBatch({ start, length: target, prefs, key, fetchFn, cfg, seeds: seedsFor(0), batch: 0, weightings });
+    if (first.routes.length || !first.badRequest) break;
+  }
+  if (weighted && weightings === false && first.routes.length) notes.push('quiet/green routing unavailable here; scored by road type and greenness instead');
   if (!first.routes.length) throw new Error(first.error ?? 'no routes');
   let routes = first.routes;
   let requested = target;
@@ -1114,10 +1430,15 @@ async function plan({ start, durationMin, paceMinPerMile, prefs = PREF_DEFAULTS,
     const ratio = lengthRatio(routes, target);
     const k = Math.min(cfg.plan.maxCorrection, Math.max(1 / cfg.plan.maxCorrection, 1 / ratio));
     requested = target * k;
-    const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: Array.from({ length: n }, (_, i) => n + i + 1) });
-    routes = routes.concat(second.routes);
+    // Batch 2 is a bonus: if it can't be built (e.g. a via spot too far for the corrected length), keep batch 1.
+    try {
+      const second = await fetchBatch({ start, length: requested, prefs, key, fetchFn, cfg, seeds: seedsFor(1), batch: 1, weightings });
+      routes = routes.concat(second.routes);
+    } catch { /* keep batch 1 */ }
   }
-  return { target, requested, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true }) };
+  const index = prefs.somewhereNew ? historyIndex(history, cfg) : null;
+  if (prefs.somewhereNew && !index) notes.push('no saved runs yet, so nothing counts as new');
+  return { target, requested, notes, candidates: rankCandidates(routes, prefs, target, cfg, { fallback: true, history: index }) };
 }
 
 // ---------- tracking ----------
@@ -1215,19 +1536,20 @@ function fmtPace(minPerMile) {
 // run_tracker UI. Imports core; the build inlines both into one page.
 
 const UI = {
-  storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form' },
+  storageKeys: { orsKey: 'run_tracker.ors_key', form: 'run_tracker.form', history: 'run_tracker.history' },
   colors: { planned: '#2563eb', alt: '#94a3b8', track: '#dc2626', gap: '#dc2626' },
   tiles: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 },
   tickMs: 1000,
+  minSavedRunM: 200, // shorter runs aren't saved to "somewhere new" history
 };
 
 const $ = (id) => document.getElementById(id);
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage off: fine */ } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch { return false; } }, // false: off or full
 };
 
-const state = { start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
+const state = { via: null, pickingVia: false, start: null, candidates: [], chosen: null, track: null, watchId: null, wakeLock: null, timer: null, layers: [], paused: false, pauseAt: null };
 
 // ---------- map ----------
 const map = L.map('map', { zoomControl: false }).setView([38.9, -77.04], 12);
@@ -1251,33 +1573,124 @@ function drawCandidates(selected) {
   if (!c) return;
   const line = add(L.polyline(latlngs(c.route.coords), { color: UI.colors.planned, weight: 5 }));
   add(L.circleMarker(c.route.coords[0], { radius: 7, color: '#16a34a', fillOpacity: 1 }));
+  if (c.route.turnIndex != null) add(L.circleMarker(c.route.coords[c.route.turnIndex], { radius: 6, color: '#f59e0b', fillOpacity: 1 })); // turnaround
   map.fitBounds(line.getBounds(), { padding: [20, 20] });
 }
 
 // ---------- form ----------
+const radio = (name, fallback) => document.querySelector(`input[name=${name}]:checked`)?.value ?? fallback;
+const numOrNull = (id) => { const v = $(id).value.trim(); return v === '' || !isFinite(Number(v)) ? null : Number(v); };
+
 function readForm() {
   return {
+    by: radio('by', 'time'),
     durationMin: Number($('duration').value),
     paceMinPerMile: Number($('pace').value),
+    distanceMi: Number($('distance').value),
     zip: $('zip').value.trim(),
     prefs: {
-      surface: document.querySelector('input[name=surface]:checked')?.value ?? PREF_DEFAULTS.surface,
-      terrain: document.querySelector('input[name=terrain]:checked')?.value ?? PREF_DEFAULTS.terrain,
+      surface: radio('surface', PREF_DEFAULTS.surface),
+      terrain: radio('terrain', PREF_DEFAULTS.terrain),
       endDownhill: $('endDownhill').checked,
+      shape: radio('shape', PREF_DEFAULTS.shape),
+      quiet: $('quiet').checked,
+      green: $('green').checked,
+      minEleFt: numOrNull('minEle'),
+      maxEleFt: numOrNull('maxEle'),
+      somewhereNew: $('somewhereNew').checked,
+      via: state.via,
     },
   };
 }
 
+function showBy() {
+  const dist = radio('by', 'time') === 'distance';
+  $('byTime').hidden = dist; $('byDistance').hidden = !dist;
+  $('durationOut').textContent = `${$('duration').value} min`;
+  $('distanceOut').textContent = `${Number($('distance').value).toFixed(2)} mi`;
+}
+document.querySelectorAll('input[name=by]').forEach((el) => { el.onchange = showBy; });
+$('distance').oninput = showBy;
+
+let restoredVia = null;
 function restoreForm() {
   $('orsKey').value = store.get(UI.storageKeys.orsKey) ?? '';
   try {
     const f = JSON.parse(store.get(UI.storageKeys.form) ?? 'null');
     if (!f) return;
     $('duration').value = f.durationMin; $('pace').value = f.paceMinPerMile; $('zip').value = f.zip ?? '';
-    for (const n of ['surface', 'terrain']) { const el = document.querySelector(`input[name=${n}][value=${f.prefs?.[n]}]`); if (el) el.checked = true; }
+    if (f.distanceMi) $('distance').value = f.distanceMi;
+    const pick = (n, v) => { const el = document.querySelector(`input[name=${n}][value="${v}"]`); if (el) el.checked = true; };
+    pick('by', f.by); pick('surface', f.prefs?.surface); pick('terrain', f.prefs?.terrain); pick('shape', f.prefs?.shape);
     $('endDownhill').checked = !!f.prefs?.endDownhill;
+    $('quiet').checked = !!f.prefs?.quiet; $('green').checked = !!f.prefs?.green;
+    $('somewhereNew').checked = !!f.prefs?.somewhereNew;
+    $('minEle').value = f.prefs?.minEleFt ?? ''; $('maxEle').value = f.prefs?.maxEleFt ?? '';
+    if (f.prefs?.minEleFt != null || f.prefs?.maxEleFt != null) $('eleBox').open = true;
+    if (f.prefs?.via && isFinite(f.prefs.via.lat) && isFinite(f.prefs.via.lon)) { restoredVia = f.prefs.via; $('viaBox').open = true; }
   } catch { /* ignore */ }
-  $('durationOut').textContent = `${$('duration').value} min`;
+  showBy();
+}
+
+// ---------- via a spot ----------
+let viaMarker = null;
+function setVia(v) {
+  state.via = v;
+  viaMarker?.remove(); viaMarker = null;
+  if (v) {
+    showTiles();
+    viaMarker = L.circleMarker([v.lat, v.lon], { radius: 8, color: '#a855f7', fillOpacity: 1 }).addTo(map);
+    $('viaLine').innerHTML = `Via: <b>${escapeHtml(v.label || `${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}`)}</b> <button id="viaClear" type="button" class="link">Clear</button>`;
+    $('viaClear').onclick = () => setVia(null);
+  } else {
+    $('viaLine').textContent = 'Loops pass through it; out-and-backs run through it and turn further on.';
+  }
+}
+$('viaFind').onclick = async () => {
+  const text = $('viaText').value.trim();
+  const key = $('orsKey').value.trim();
+  if (!text) { status('Type a place to go via, or tap the map.', true); return; }
+  if (!key) { openHowto(); return; }
+  try {
+    let r;
+    try { r = await fetch(geocodeUrl(text, key, CONFIG, state.start)); } catch { throw new Error(NETWORK_ERROR); }
+    if (!r.ok) throw new Error(`place lookup failed (${r.status})`);
+    const v = parseGeocode(await r.json());
+    setVia(v);
+    map.setView([v.lat, v.lon], 14);
+    status('Via spot set. Plan your run.');
+  } catch (e) { status(e.message, true); }
+};
+$('viaTap').onclick = () => {
+  state.pickingVia = true;
+  showTiles();
+  document.getElementById('map').scrollIntoView({ behavior: 'smooth' });
+  status('Tap the map where you want to go through.');
+};
+map.on('click', (e) => {
+  if (!state.pickingVia) return;
+  state.pickingVia = false;
+  setVia({ lat: e.latlng.lat, lon: e.latlng.lng, label: 'spot on the map' });
+  status('Via spot set. Plan your run.');
+});
+
+// ---------- saved runs ("somewhere new") ----------
+function loadHistory() {
+  try { const h = JSON.parse(store.get(UI.storageKeys.history) ?? '[]'); return Array.isArray(h) ? h : []; } catch { return []; }
+}
+function saveRun(coords) {
+  let h = addRun(loadHistory(), coords, new Date().toISOString().slice(0, 10));
+  // Storage full: drop the oldest runs until it fits (or give up and say so).
+  while (!store.set(UI.storageKeys.history, JSON.stringify(h)) && h.length > 1) h = h.slice(0, Math.floor(h.length * 0.8));
+  showHistory();
+}
+function showHistory() {
+  const n = loadHistory().length;
+  $('historyLine').innerHTML = n
+    ? `${n} saved run${n === 1 ? '' : 's'} on this device. <button id="clearHistory" type="button" class="link">Clear</button>`
+    : 'Finish a run here, or tap "I ran this", and it counts as ground you know.';
+  const c = document.getElementById('clearHistory');
+  if (c) c.onclick = () => { store.set(UI.storageKeys.history, '[]'); showHistory(); };
 }
 
 // ---------- how-to popup ----------
@@ -1313,6 +1726,7 @@ $('useLocation').onclick = async () => {
 $('duration').oninput = () => { $('durationOut').textContent = `${$('duration').value} min`; };
 
 $('planBtn').onclick = async () => {
+  state.pickingVia = false;
   const key = $('orsKey').value.trim();
   store.set(UI.storageKeys.orsKey, key);
   const f = readForm();
@@ -1322,7 +1736,7 @@ $('planBtn').onclick = async () => {
     if (f.zip) {
       status('Looking up zip…');
       let r;
-      try { r = await fetch(geocodeUrl(f.zip, key)); } catch { throw new Error(NETWORK_ERROR); }
+      try { r = await fetch(geocodeUrl(f.zip, key, CONFIG)); } catch { throw new Error(NETWORK_ERROR); }
       if (!r.ok) throw new Error(`zip lookup failed (${r.status})`);
       state.start = parseGeocode(await r.json());
     }
@@ -1330,7 +1744,11 @@ $('planBtn').onclick = async () => {
     showTiles();
     status(`Building ${CONFIG.plan.seeds} loops and scoring them…`);
     $('planBtn').disabled = true;
-    const res = await plan({ start: state.start, durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile, prefs: f.prefs, key });
+    const res = await plan({
+      start: state.start, prefs: f.prefs, key, history: loadHistory(),
+      ...(f.by === 'distance' ? { distanceMi: f.distanceMi } : { durationMin: f.durationMin, paceMinPerMile: f.paceMinPerMile }),
+    });
+    state.notes = res.notes;
     state.candidates = res.candidates;
     renderCandidates(res.target);
     $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1343,17 +1761,21 @@ function renderCandidates(target) {
   list.innerHTML = '';
   if (!state.candidates.length) {
     state.chosen = null; $('runBar').hidden = true; clearLayers();
-    status('No loops came back. Try again or move the start.', true); return;
+    status('No routes came back. Try again or move the start.', true); return;
   }
   const off = state.candidates[0].offTarget;
-  status(off
-    ? `Nothing within ${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${(target / 1609.344).toFixed(1)} mi here; these are the closest.`
-    : `Target ${(target / 1609.344).toFixed(2)} mi. Tap a loop, then Run it.`, off);
+  const why = state.candidates[0].offWhy ?? [];
+  const miles = (target / CONFIG.pace.metersPerMile).toFixed(off ? 1 : 2);
+  const miss = why.includes('elevation') && why.includes('length') ? `the length (${miles} mi) and elevation limits`
+    : why.includes('elevation') ? 'your elevation limits' : `${Math.round(CONFIG.plan.distanceTolerance * 100)}% of ${miles} mi`;
+  const note = state.notes?.length ? ` (${state.notes.join('; ')})` : '';
+  status((off ? `Nothing here fits ${miss}; these are the closest.` : `Target ${miles} mi. Tap a route, then Run it.`) + note, off);
   state.candidates.forEach((c, i) => {
     const m = c.metrics;
     const card = document.createElement('button');
     card.className = 'card';
-    card.innerHTML = `<b>Loop ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.offTarget ? 'off target · ' : ''}${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
+    const kind = c.route.shape === 'outback' ? 'Out & back' : 'Loop';
+    card.innerHTML = `<b>${kind} ${i + 1}</b> · ${(m.distance / 1609.344).toFixed(2)} mi · ↑${Math.round(m.ascent * CONFIG.pace.feetPerMeter)} ft<br><small>${c.offTarget ? 'off target · ' : ''}${c.reasons.map(escapeHtml).join(' · ') || 'balanced'}</small>`;
     card.onclick = () => select(i);
     list.appendChild(card);
   });
@@ -1454,7 +1876,15 @@ $('finishBtn').onclick = () => {
   tick();
   document.body.classList.remove('running');
   document.body.classList.add('done');
-  status('Run saved below. Export it as GPX if you want to keep it.');
+  const ran = runSegments(state.track).flat();
+  if (state.track.distance >= UI.minSavedRunM) saveRun(ran); // remembered for "somewhere new"
+  status('Run saved on this device. Export it as GPX if you want a file.');
+};
+
+$('ranBtn').onclick = () => {
+  if (!state.chosen) return;
+  saveRun(state.chosen.route.coords);
+  status('Saved as run: "somewhere new" will now count this route as ground you know.');
 };
 
 $('saveRunBtn').onclick = () => {
@@ -1467,6 +1897,8 @@ $('saveRunBtn').onclick = () => {
 $('newBtn').onclick = () => { document.body.classList.remove('done'); state.track = null; if (state.candidates.length) drawCandidates(state.candidates.indexOf(state.chosen)); };
 
 restoreForm();
+showHistory();
+if (restoredVia) setVia(restoredVia);
 
 </script>
 </body>

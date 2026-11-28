@@ -24,16 +24,30 @@ export function loopCoords({ sideM = 1000, n = 40, hill = 0 } = {}) {
   });
 }
 
-export function orsResponse({ sideM, hill = 0, surface = 3 } = {}) {
+const wrap = (coordinates, extras) => ({
+  type: 'FeatureCollection',
+  features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates }, properties: { extras } }],
+});
+const whole = (n, v) => ({ values: [[0, n - 1, v]] });
+
+// extras: optional { waytype, green, noise } single values for the whole route.
+export function orsResponse({ sideM, hill = 0, surface = 3, waytype, green, noise } = {}) {
   const coordinates = loopCoords({ sideM, hill });
-  return {
-    type: 'FeatureCollection',
-    features: [{
-      type: 'Feature',
-      geometry: { type: 'LineString', coordinates },
-      properties: { extras: { surface: { values: [[0, coordinates.length - 1, surface]] } } },
-    }],
-  };
+  const n = coordinates.length;
+  const extras = { surface: whole(n, surface) };
+  if (waytype != null) extras.waytype = whole(n, waytype);
+  if (green != null) extras.green = whole(n, green);
+  if (noise != null) extras.noise = whole(n, noise);
+  return wrap(coordinates, extras);
+}
+
+// A one-way line from START toward `to` ({lat, lon}) in n steps, rising `hill` m: what ORS returns for start -> turn.
+export function orsLine(to, { n = 30, hill = 0, surface = 3 } = {}) {
+  const coordinates = Array.from({ length: n + 1 }, (_, i) => {
+    const t = i / n;
+    return [START.lon + (to.lon - START.lon) * t, START.lat + (to.lat - START.lat) * t, 50 + hill * t];
+  });
+  return wrap(coordinates, { surface: whole(coordinates.length, surface) });
 }
 
 export function fakeFetch(bySeed) {

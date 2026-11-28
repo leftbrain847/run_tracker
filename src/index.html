@@ -47,6 +47,13 @@
   body.running #liveBar { display: flex; }
   body.done #doneBar { display: flex; }
   #finishBtn { background: var(--run); font-weight: 600; }
+  .seg { display: flex; background: #0b1222; border: 1px solid #334155; border-radius: 10px; padding: 3px; margin: 2px 0 8px; }
+  .seg label { flex: 1; margin: 0; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg span { display: block; width: 100%; text-align: center; padding: 10px 6px; border-radius: 8px; color: var(--mute); }
+  .seg input:checked + span { background: var(--accent); color: #fff; font-weight: 600; }
+  .seg input:focus-visible + span { outline: 2px solid #93c5fd; }
+  [hidden] { display: none !important; }
   button.link { background: none; padding: 10px 0; color: #93c5fd; text-decoration: underline; min-height: 44px; }
   dialog { background: var(--panel); color: var(--ink); border: 1px solid #334155; border-radius: 14px; padding: 16px 18px; max-width: 30rem; width: calc(100% - 28px); }
   dialog:not([open]) { display: none; }
@@ -76,10 +83,27 @@
       </div>
     </fieldset>
     <fieldset>
-      <legend>Duration · pace</legend>
-      <input id="duration" type="range" min="10" max="180" step="5" value="40">
-      <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
-        <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+      <legend>How far</legend>
+      <div class="seg" role="radiogroup" aria-label="Plan by">
+        <label><input type="radio" name="by" value="time" checked><span>Time</span></label>
+        <label><input type="radio" name="by" value="distance"><span>Distance</span></label>
+      </div>
+      <div id="byTime">
+        <input id="duration" type="range" min="10" max="180" step="5" value="40" aria-label="Duration">
+        <div class="row"><b id="durationOut">40 min</b><span style="flex:1"></span>
+          <label>pace <input id="pace" type="number" min="5" max="20" step="0.25" value="10" style="width:5em"> min/mi</label></div>
+      </div>
+      <div id="byDistance" hidden>
+        <input id="distance" type="range" min="0.5" max="20" step="0.25" value="4" aria-label="Distance">
+        <div class="row"><b id="distanceOut">4.00 mi</b></div>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Route</legend>
+      <div class="seg" role="radiogroup" aria-label="Route type">
+        <label><input type="radio" name="shape" value="loop" checked><span>Loop</span></label>
+        <label><input type="radio" name="shape" value="outback"><span>Out &amp; back</span></label>
+      </div>
     </fieldset>
     <fieldset>
       <legend>Surface</legend>
@@ -94,6 +118,30 @@
       <label><input type="radio" name="terrain" value="flat"> flat</label>
       <label><input type="checkbox" id="endDownhill"> end downhill</label>
     </fieldset>
+    <fieldset>
+      <legend>Prefer</legend>
+      <label><input type="checkbox" id="quiet"> quiet streets (avoid main roads)</label>
+      <label><input type="checkbox" id="green"> green / shady</label>
+      <label><input type="checkbox" id="somewhereNew"> somewhere new</label>
+      <p class="small" id="historyLine"></p>
+    </fieldset>
+    <details id="viaBox">
+      <summary>Go via a spot (optional)</summary>
+      <div class="row">
+        <input id="viaText" type="text" placeholder="park, landmark, address" style="flex:1;min-width:10em">
+        <button id="viaFind" type="button">Find</button>
+        <button id="viaTap" type="button">Tap map</button>
+      </div>
+      <p class="small" id="viaLine">Loops pass through it; out-and-backs run through it and turn further on.</p>
+    </details>
+    <details id="eleBox">
+      <summary>Elevation limits (optional)</summary>
+      <div class="row">
+        <label>min <input id="minEle" type="number" inputmode="numeric" step="10" placeholder="none" style="width:6em"> ft</label>
+        <label>max <input id="maxEle" type="number" inputmode="numeric" step="10" placeholder="none" style="width:6em"> ft</label>
+      </div>
+      <p class="small">Routes that go below the min or above the max are skipped. Openrouteservice can't steer by elevation, so tight limits in hilly areas may leave only the closest matches.</p>
+    </details>
     <button id="planBtn" class="primary" type="button">Plan my run</button>
     <div id="status"></div>
     <div id="results"></div>
@@ -125,6 +173,7 @@
 
 <div id="runBar" class="bar" hidden>
   <button id="gpxBtn" type="button">GPX for watch</button>
+  <button id="ranBtn" type="button" title="Ran it with your watch? Save it so 'somewhere new' knows">I ran this</button>
   <button id="startBtn" class="go" type="button">Run it</button>
 </div>
 <div id="liveBar" class="bar">
